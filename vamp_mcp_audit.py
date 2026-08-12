@@ -167,6 +167,26 @@ INJECTION_PATTERNS: List[re.Pattern] = [
 # Longitud máxima razonable para una description de tool (caracteres)
 MAX_DESCRIPTION_LENGTH = 500
 
+# Directorio de datasets adversariales bundleados
+_PAYLOADS_DIR: Path = Path(__file__).parent / "payloads"
+
+
+def _cargar_mcp_payloads() -> List[str]:
+    """Carga el dataset curado de payloads de inyección MCP desde payloads/mcp_injections.json."""
+    ruta = _PAYLOADS_DIR / "mcp_injections.json"
+    if not ruta.exists():
+        return []
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            data = json.load(f)
+        return [p for p in data if isinstance(p, str) and len(p) > 5]
+    except Exception:
+        return []
+
+
+# Cache de payloads cargados al inicio (evita re-lectura por cada tool)
+_MCP_INJECTION_PAYLOADS: List[str] = _cargar_mcp_payloads()
+
 # ---------------------------------------------------------------------------
 # Patrones de tools peligrosas — Fase 3: Privilege & Permissions Audit
 # ---------------------------------------------------------------------------
@@ -714,6 +734,37 @@ class MCPAuditor:
                     ))
                     poisoning_count += 1
                     break  # Un hallazgo por tool por patrón (evitar duplicados)
+
+            # --- Comprobación 2b: Coincidencia con payloads reales de injection ---
+            if _MCP_INJECTION_PAYLOADS and not any(
+                p.search(desc) for p in INJECTION_PATTERNS if p.search(desc)
+            ):
+                for payload in _MCP_INJECTION_PAYLOADS:
+                    if len(payload) > 20 and payload.lower()[:60] in desc.lower():
+                        self._add_finding(Finding(
+                            tool=tool_name,
+                            severity="CRITICAL",
+                            type="tool_poisoning",
+                            title=f"[{tool_name}] Payload de inyección real detectado en description",
+                            description=(
+                                f"La description de '{tool_name}' contiene texto que coincide "
+                                "con un payload del dataset curado de inyecciones reales "
+                                "(TrustAI Learn-Prompt-Hacking, 210 vectores). "
+                                "Este payload está diseñado para redirigir o manipular el "
+                                "comportamiento del agente IA que procese esta tool."
+                            ),
+                            affected=f"tool:{tool_name}.description",
+                            recommendation=(
+                                "Eliminar la tool del servidor o aislar inmediatamente. "
+                                "Auditar el origen del código del servidor MCP. "
+                                "Revisar logs del agente para detectar comportamiento anómalo previo."
+                            ),
+                            phase=2,
+                            owasp="A01",
+                            evidence=f"Payload detectado: '{payload[:150]}'",
+                        ))
+                        poisoning_count += 1
+                        break
 
             # --- Comprobación 3: Instrucciones en campos del schema ---
             self._check_schema_poisoning(tool_name, schema)
