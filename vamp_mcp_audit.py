@@ -158,7 +158,7 @@ INJECTION_PATTERNS: List[re.Pattern] = [
     re.compile(r"always\s+(exfiltrate|send|transmit|forward|leak)\s+", re.IGNORECASE),
     re.compile(r"(user|session|context)\s+(data|credentials?|tokens?|secrets?)", re.IGNORECASE),
     re.compile(r"when\s+(called|invoked|triggered|executed|used)\s+(always|secretly|silently)", re.IGNORECASE),
-    # Secuencias de control Unicode sospechosas (directionality override, zero-width chars)
+    # Secuencias de control Unicode sospechosas (anulación de dirección, caracteres de ancho cero)
     re.compile(r"[‪-‮⁦-⁩​-‏﻿]"),
     re.compile(r"(read|access|send|upload|exfiltrate)\s+(?:all\s+)?(?:user\s+)?(?:files?|documents?|credentials?|secrets?)", re.IGNORECASE),
     re.compile(r"(password|token|api.?key|secret)\s+(found|extracted|captured|obtained)", re.IGNORECASE),
@@ -262,7 +262,7 @@ def _cargar_mcp_payloads() -> List[str]:
 _MCP_INJECTION_PAYLOADS: List[str] = _cargar_mcp_payloads()
 
 # ---------------------------------------------------------------------------
-# Patrones de tools peligrosas — Fase 3: Privilege & Permissions Audit
+# Patrones de tools peligrosas — Fase 3: Auditoría de Privilegios y Permisos
 # ---------------------------------------------------------------------------
 
 # Palabras clave en nombre/descripción de tool que indican riesgo de privilegio
@@ -1632,19 +1632,19 @@ class MCPAuditor:
             self.tools       = await self.list_tools(session)
             self.resources   = await self.list_resources(session)
 
-            # FASE 2: Tool Poisoning Detection
+            # FASE 2: Detección de Tool Poisoning
             self._phase_header(2, "Detección de Tool Poisoning")
             await self.audit_tool_poisoning(self.tools)
 
-            # FASE 3: Privilege & Permissions Audit
+            # FASE 3: Auditoría de Privilegios y Permisos
             self._phase_header(3, "Auditoría de Privilegios y Permisos")
             await self.audit_permissions(self.tools)
 
-            # FASE 4: Transport Security
+            # FASE 4: Seguridad del Transporte
             self._phase_header(4, "Seguridad del Transporte")
             await self.audit_transport(session)
 
-            # FASE 5: Agentic Risk Assessment
+            # FASE 5: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
             self._phase_header(5, "Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)")
             risk_summary = self.assess_agentic_risk(self.tools, self.findings)
 
