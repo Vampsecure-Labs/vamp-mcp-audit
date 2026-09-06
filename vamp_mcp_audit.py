@@ -97,7 +97,7 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "1.0"
+VERSION   = "1.1"
 
 BANNER = r"""
  __   ____   __  __ ____     __  __  ____ ____        _   _   _ ____ ___ _____
@@ -106,7 +106,7 @@ BANNER = r"""
    | |/ ___ \| |  | |  __/   | |  | | |___|  __/    / ___ \ |_| | |_|| |  | |
    |_/_/   \_|_|  |_|_|      |_|  |_|\____|_|      /_/   \_\___/|____/___| |_|
 
-     by VampSecure Studios · vamp-mcp-audit v1.0 · MCP Security Auditor
+     by VampSecure Studios · vamp-mcp-audit v1.1 · MCP Security Auditor
      ───────────────────────────────────────────────────────────────────────
      USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -167,18 +167,92 @@ INJECTION_PATTERNS: List[re.Pattern] = [
 # Longitud máxima razonable para una description de tool (caracteres)
 MAX_DESCRIPTION_LENGTH = 500
 
+# ---------------------------------------------------------------------------
+# Detección de ASCII Smuggling — Unicode Tags (U+E0000-U+E007F)
+# ---------------------------------------------------------------------------
+
+# Rango Unicode Tags — ASCII smuggling (U+E0000-U+E007F)
+_UNICODE_TAGS_INICIO = 0xE0000
+_UNICODE_TAGS_FIN    = 0xE007F
+
+# Flags legítimos que usan el bloque Tags (excluir de detección)
+# Las banderas regionales de Inglaterra, Escocia y Gales usan secuencias de este rango
+_FLAGS_LEGITIMOS_TAGS = {
+    "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F",  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Inglaterra
+    "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F",  # 🏴󠁧󠁢󠁳󠁣󠁴󠁿 Escocia
+    "\U0001F3F4\U000E0067\U000E0062\U000E0077\U000E006C\U000E0073\U000E007F",  # 🏴󠁧󠁢󠁷󠁬󠁳󠁿 Gales
+}
+
+
+def _detectar_ascii_smuggling_mcp(texto: str) -> tuple:
+    """
+    Detecta caracteres del bloque Unicode Tags (U+E0000-U+E007F) en texto MCP.
+
+    Este bloque fue diseñado originalmente para marcas de idioma en texto plano,
+    pero es invisible para casi todos los visualizadores de texto. Un servidor MCP
+    malicioso puede codificar instrucciones completas en este rango, que el LLM
+    cliente interpreta perfectamente aunque el auditor humano no vea nada.
+
+    Vector documentado por Microsoft Security Research (sep 2026) para phishing,
+    y aplicable a MCP con consecuencias aún más graves al tener permisos de ejecución.
+
+    Parámetros
+    ----------
+    texto : Cadena de texto del campo MCP a inspeccionar
+
+    Retorna
+    -------
+    Tuple (encontrado: bool, decodificado: str, num_chars: int)
+    """
+    # Eliminar flags legítimos antes de buscar caracteres sueltos
+    texto_limpio = texto
+    for flag in _FLAGS_LEGITIMOS_TAGS:
+        texto_limpio = texto_limpio.replace(flag, "")
+
+    chars_smuggling = [c for c in texto_limpio
+                       if _UNICODE_TAGS_INICIO <= ord(c) <= _UNICODE_TAGS_FIN]
+    if not chars_smuggling:
+        return False, "", 0
+
+    # Decodificar el mensaje oculto: cada char Tag = ASCII original + 0xE0000
+    decodificado = ""
+    for c in chars_smuggling:
+        cp = ord(c)
+        ascii_eq = cp - _UNICODE_TAGS_INICIO
+        if 0x20 <= ascii_eq <= 0x7E:
+            decodificado += chr(ascii_eq)
+        else:
+            decodificado += f"[U+{cp:05X}]"
+
+    return True, decodificado.strip(), len(chars_smuggling)
+
+
 # Directorio de datasets adversariales bundleados
 _PAYLOADS_DIR: Path = Path(__file__).parent / "payloads"
 
 
 def _cargar_mcp_payloads() -> List[str]:
-    """Carga el dataset curado de payloads de inyección MCP desde payloads/mcp_injections.json."""
+    """
+    Carga el dataset curado de payloads de inyección MCP desde payloads/mcp_injections.json.
+
+    El fichero puede ser un array plano (formato legacy) o un objeto con dos secciones:
+    - "payloads": array de strings de inyección de texto visible
+    - "ascii_smuggling_samples": array de strings con caracteres Unicode Tags ocultos
+
+    Ambas secciones se combinan en la lista devuelta.
+    """
     ruta = _PAYLOADS_DIR / "mcp_injections.json"
     if not ruta.exists():
         return []
     try:
         with open(ruta, encoding="utf-8") as f:
             data = json.load(f)
+        # Formato nuevo: objeto con secciones
+        if isinstance(data, dict):
+            payloads  = data.get("payloads", [])
+            smuggling = data.get("ascii_smuggling_samples", [])
+            return [p for p in payloads + smuggling if isinstance(p, str) and len(p) > 5]
+        # Formato legacy: array plano
         return [p for p in data if isinstance(p, str) and len(p) > 5]
     except Exception:
         return []
@@ -766,10 +840,63 @@ class MCPAuditor:
                         poisoning_count += 1
                         break
 
-            # --- Comprobación 3: Instrucciones en campos del schema ---
+            # --- Comprobación 3: ASCII smuggling en campos de la tool ---
+            # Los caracteres Unicode Tags (U+E0000-U+E007F) son completamente invisibles
+            # en inspección visual pero el LLM los procesa, permitiendo instrucciones
+            # de prompt injection indetectables para el auditor humano.
+            campos_a_revisar = {
+                "description": desc,
+                "name":        tool_name,
+            }
+            schema_str = str(tool.get("inputSchema", ""))
+            if schema_str and schema_str != "{}":
+                campos_a_revisar["inputSchema"] = schema_str
+
+            for campo, valor in campos_a_revisar.items():
+                if not valor:
+                    continue
+                encontrado, decodificado, num_chars = _detectar_ascii_smuggling_mcp(valor)
+                if encontrado:
+                    evidencia = (
+                        f"Caracteres de smuggling: {num_chars}. "
+                        f"Contenido decodificado: '{decodificado[:200]}'"
+                        if decodificado else
+                        f"Caracteres de smuggling: {num_chars} (sin mensaje ASCII decodificable)"
+                    )
+                    self._add_finding(Finding(
+                        tool=tool_name,
+                        severity="CRITICAL",
+                        type="ascii_smuggling",
+                        title=f"[{tool_name}] ASCII smuggling detectado en '{campo}'",
+                        description=(
+                            f"El campo '{campo}' de la tool '{tool_name}' contiene {num_chars} "
+                            f"caracteres Unicode Tags invisibles (U+E0000-U+E007F). "
+                            "Estos caracteres son completamente invisibles para el humano en "
+                            "cualquier inspector visual, pero el LLM cliente los procesa con "
+                            "normalidad, permitiendo prompt injection indetectable. "
+                            "Un servidor MCP malicioso puede codificar instrucciones completas "
+                            "en este rango para manipular al agente IA sin dejar rastro visual. "
+                            "Vector documentado por Microsoft Security Research (sep 2026)."
+                        ),
+                        affected=f"tool:{tool_name}.{campo}",
+                        recommendation=(
+                            "Filtrar o rechazar cualquier tool description, name o schema que "
+                            "contenga caracteres del bloque Unicode Tags (U+E0000-U+E007F) antes "
+                            "de exponerlos al LLM cliente. Implementar validación Unicode estricta "
+                            "en el proxy o gateway MCP. "
+                            "Referencia: https://www.microsoft.com/en-us/security/blog/2026/09/03/"
+                            "ascii-smuggling-crosses-over-from-ai-prompt-injection-to-phishing-evasion/"
+                        ),
+                        phase=2,
+                        owasp="A01",
+                        evidence=evidencia,
+                    ))
+                    poisoning_count += 1
+
+            # --- Comprobación 4: Instrucciones en campos del schema ---
             self._check_schema_poisoning(tool_name, schema)
 
-            # --- Comprobación 4: Description referencia contexto de sesión o usuario ---
+            # --- Comprobación 5: Description referencia contexto de sesión o usuario ---
             session_ref_pattern = re.compile(
                 r"(session|context|history|conversation|user.?data|"
                 r"previous.?messages?|chat.?history|memory)",
@@ -1537,6 +1664,9 @@ class MCPAuditor:
         for f in findings:
             counts[f.severity] = counts.get(f.severity, 0) + 1
 
+        # Conteo específico de hallazgos de ASCII smuggling
+        smuggling_count = sum(1 for f in findings if f.type == "ascii_smuggling")
+
         # Fila de totales por severidad
         totals = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
         totals.add_column("sev", style="bold")
@@ -1545,6 +1675,17 @@ class MCPAuditor:
             n = counts.get(sev, 0)
             if n > 0:
                 totals.add_row(f"[{color}]{sev}[/{color}]", f"[{color}]{n}[/{color}]")
+
+        # Línea especial si se detectó ASCII smuggling
+        if smuggling_count > 0:
+            totals.add_row(
+                "[bold red]ASCII SMUGGLING[/bold red]",
+                f"[bold red]{smuggling_count}[/bold red]",
+            )
+            totals.add_row(
+                "[dim]  Unicode Tags invisibles detectados[/dim]",
+                "[dim]NUEVO[/dim]",
+            )
 
         self.console.print(Panel(totals, title="[bold white]Resumen de Hallazgos[/bold white]", border_style="blue"))
 
