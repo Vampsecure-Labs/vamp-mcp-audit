@@ -97,7 +97,7 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "1.1"
+VERSION   = "1.2"
 
 BANNER = r"""
 __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___ 
@@ -105,7 +105,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-mcp-audit v1.1 · MCP Security Auditor
+  vamp-mcp-audit v1.2 · MCP Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -429,6 +429,7 @@ class MCPAuditor:
         scope_file: Optional[str] = None,
         timeout: int = 10,
         verbose: bool = False,
+        ctx_limit: int = 32000,
     ) -> None:
         """
         Inicializa el auditor con el target y la configuración de sesión.
@@ -439,11 +440,13 @@ class MCPAuditor:
         scope_file : Ruta a fichero de scope (opcional, formato JSON)
         timeout    : Timeout en segundos para peticiones HTTP
         verbose    : Activa output detallado en consola
+        ctx_limit  : Umbral en caracteres para la alerta de context overflow (Fase 6)
         """
         self.target      = target.rstrip("/")
         self.scope_file  = scope_file
         self.timeout     = aiohttp.ClientTimeout(total=timeout)
         self.verbose     = verbose
+        self.ctx_limit   = ctx_limit
         self.findings:   List[Finding] = []
         self.server_info: Dict = {}
         self.tools:      List[Dict] = []
@@ -582,6 +585,81 @@ class MCPAuditor:
         server_name    = result.get("serverInfo", {}).get("name", "desconocido")
         server_version = result.get("serverInfo", {}).get("version", "desconocida")
         capabilities   = result.get("capabilities", {})
+
+        # ── Detección de versión del protocolo MCP ────────────────────────────
+        # El campo protocolVersion en la respuesta initialize indica la versión
+        # del protocolo que el servidor declara soportar.
+        protocol_version: str = result.get("protocolVersion", "")
+
+        if protocol_version:
+            self.console.print(
+                f"  [dim]·[/dim] Protocolo MCP declarado: [bold]{protocol_version}[/bold]"
+            )
+            self._add_finding(Finding(
+                tool="server",
+                severity="INFO",
+                type="protocol",
+                title=f"Versión del protocolo MCP detectada: {protocol_version}",
+                description=(
+                    f"El servidor MCP declaró la versión de protocolo '{protocol_version}' "
+                    "en la respuesta al handshake initialize. Esta información permite "
+                    "identificar el nivel de características soportadas y posibles "
+                    "vulnerabilidades conocidas en versiones antiguas del protocolo."
+                ),
+                affected=self.target,
+                recommendation=(
+                    "Mantener el servidor actualizado a la versión más reciente del protocolo MCP "
+                    "para disponer de las correcciones de seguridad más recientes."
+                ),
+                phase=1,
+                evidence=f"protocolVersion: {protocol_version}",
+            ))
+            # Versión mínima recomendada: 2025-03-26 (fecha de la especificación con
+            # mejoras de seguridad en el handshake y validación de herramientas)
+            VERSION_MINIMA_MCP = "2025-03-26"
+            if protocol_version < VERSION_MINIMA_MCP:
+                self._add_finding(Finding(
+                    tool="server",
+                    severity="MEDIUM",
+                    type="protocol",
+                    title="Versión del protocolo MCP desactualizada",
+                    description=(
+                        f"El servidor usa el protocolo MCP versión '{protocol_version}', "
+                        f"anterior a la versión mínima recomendada '{VERSION_MINIMA_MCP}'. "
+                        "Las versiones antiguas pueden carecer de controles de seguridad "
+                        "introducidos en revisiones posteriores del protocolo, como la "
+                        "validación reforzada de esquemas de herramientas y los mecanismos "
+                        "de autenticación del transporte."
+                    ),
+                    affected=self.target,
+                    recommendation=(
+                        f"Actualizar el servidor MCP a una versión que implemente el protocolo "
+                        f">= {VERSION_MINIMA_MCP}. Consultar el changelog del servidor para "
+                        "conocer las correcciones de seguridad incluidas en versiones recientes."
+                    ),
+                    phase=1,
+                    owasp="A05",
+                    evidence=f"protocolVersion declarada: {protocol_version} < {VERSION_MINIMA_MCP}",
+                ))
+        else:
+            self._add_finding(Finding(
+                tool="server",
+                severity="INFO",
+                type="protocol",
+                title="Versión del protocolo MCP no declarada",
+                description=(
+                    "El servidor MCP no incluyó el campo 'protocolVersion' en la respuesta "
+                    "al handshake initialize. La ausencia de este campo impide determinar "
+                    "el nivel de características soportadas y puede indicar una implementación "
+                    "no estándar del protocolo."
+                ),
+                affected=self.target,
+                recommendation=(
+                    "El servidor debería declarar explícitamente la versión del protocolo MCP "
+                    "que implementa en la respuesta initialize, siguiendo la especificación estándar."
+                ),
+                phase=1,
+            ))
 
         self.console.print(
             f"  [green]✓[/green] Servidor MCP identificado: "
@@ -1597,6 +1675,105 @@ class MCPAuditor:
         }
 
     # -----------------------------------------------------------------------
+    # FASE 6: Context Window Overflow — superficie de descripciones de tools
+    # -----------------------------------------------------------------------
+
+    async def audit_context_overflow(self, tools: List[Dict]) -> None:
+        """
+        Fase 6: Análisis de agotamiento de ventana de contexto mediante
+        descripciones de herramientas.
+
+        Calcula el tamaño acumulado de todas las descripciones de tools y alerta
+        si supera los umbrales configurados. Un servidor MCP malicioso puede usar
+        descripciones excesivamente largas para consumir la ventana de contexto
+        del agente LLM cliente, desplazando instrucciones legítimas del sistema
+        y facilitando ataques de prompt injection por overflow.
+
+        Hallazgos posibles
+        ------------------
+        MCP-CTX-001 : Agotamiento de ventana de contexto por descripciones (HIGH)
+        MCP-CTX-002 : Superficie de descripciones grande (MEDIUM)
+        """
+        # Tamaño total acumulado de todas las descripciones de tools (en caracteres)
+        total_chars = sum(len(t.get("description", "")) for t in tools)
+
+        # Umbral MEDIUM: ~8000 tokens estimados (≈ 8000 chars con ratio 1:1 aprox.)
+        UMBRAL_MEDIUM = 8000
+        # Umbral HIGH: configurable via --ctx-limit (default 32000 chars)
+        umbral_high   = self.ctx_limit
+
+        self._log(
+            f"Tamaño acumulado de descripciones: {total_chars} caracteres "
+            f"(umbral HIGH: {umbral_high}, MEDIUM: {UMBRAL_MEDIUM})"
+        )
+
+        if total_chars > umbral_high:
+            # Identificar las tools con las descripciones más largas
+            tools_ordenadas = sorted(
+                tools,
+                key=lambda t: len(t.get("description", "")),
+                reverse=True,
+            )
+            top_tools = [
+                f"{t.get('name','?')} ({len(t.get('description',''))} chars)"
+                for t in tools_ordenadas[:5]
+            ]
+            self._add_finding(Finding(
+                tool="context",
+                severity="HIGH",
+                type="context_overflow",
+                title="Agotamiento de ventana de contexto vía descripciones de tools",
+                description=(
+                    f"El tamaño acumulado de las descripciones de las {len(tools)} tools "
+                    f"inventariadas es de {total_chars} caracteres, superando el umbral de "
+                    f"{umbral_high} caracteres configurado. Un agente LLM que cargue todas "
+                    "estas tools en su contexto puede ver desplazadas instrucciones del "
+                    "sistema prompt, facilitando ataques de prompt injection por overflow "
+                    "y comportamientos impredecibles del agente."
+                ),
+                affected=f"{self.target} → tools/list",
+                recommendation=(
+                    "Reducir la longitud de las descripciones de tools al mínimo necesario "
+                    "para que el agente comprenda su propósito. Las descripciones de tools "
+                    "no deben superar los 500 caracteres. Separar la documentación extensa "
+                    "en campos de ayuda secundarios, no en la descripción principal."
+                ),
+                phase=6,
+                owasp="A02",
+                evidence=(
+                    f"Total chars: {total_chars} / umbral {umbral_high}. "
+                    f"Tools más largas: {', '.join(top_tools)}"
+                ),
+            ))
+        elif total_chars > UMBRAL_MEDIUM:
+            self._add_finding(Finding(
+                tool="context",
+                severity="MEDIUM",
+                type="context_overflow",
+                title="Superficie de descripciones de tools grande",
+                description=(
+                    f"El tamaño acumulado de las descripciones de las {len(tools)} tools "
+                    f"es de {total_chars} caracteres (~{total_chars // 4} tokens estimados), "
+                    f"superando los {UMBRAL_MEDIUM} caracteres. Aunque no supera el umbral "
+                    "crítico, representa una superficie de contexto considerable que puede "
+                    "degradar la calidad de razonamiento del agente LLM cliente."
+                ),
+                affected=f"{self.target} → tools/list",
+                recommendation=(
+                    "Revisar y reducir las descripciones de tools más largas. "
+                    "Apuntar a descripciones concisas (< 200 caracteres) centradas en "
+                    "el propósito de la tool, no en su implementación."
+                ),
+                phase=6,
+                evidence=f"Total chars: {total_chars} / umbral MEDIUM {UMBRAL_MEDIUM}",
+            ))
+        else:
+            self.console.print(
+                f"  [green]✓[/green] Tamaño de descripciones OK: "
+                f"[dim]{total_chars} chars[/dim] (umbral: {umbral_high})"
+            )
+
+    # -----------------------------------------------------------------------
     # Orquestador principal
     # -----------------------------------------------------------------------
 
@@ -1646,6 +1823,11 @@ class MCPAuditor:
             # FASE 5: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
             self._phase_header(5, "Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)")
             risk_summary = self.assess_agentic_risk(self.tools, self.findings)
+
+            # FASE 6: Context Window Overflow — superficie de descripciones de tools
+            if self.tools:
+                self._phase_header(6, "Context Window Overflow — Superficie de Descripciones")
+                await self.audit_context_overflow(self.tools)
 
         # Ordenar hallazgos por severidad descendente
         sorted_findings = sorted(self.findings, key=lambda f: f.order)
@@ -2275,6 +2457,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s v{VERSION} — VampSecure Labs",
     )
+    parser.add_argument(
+        "--ctx-limit",
+        type=int,
+        default=32000,
+        metavar="N",
+        dest="ctx_limit",
+        help=(
+            "Umbral en caracteres para la alerta HIGH de context window overflow "
+            "en la Fase 6 (default: 32000). Por encima de 8000 se emite MEDIUM; "
+            "por encima de N se emite HIGH."
+        ),
+    )
 
     return parser
 
@@ -2299,6 +2493,7 @@ def main() -> None:
         scope_file=args.scope,
         timeout=args.timeout,
         verbose=args.verbose,
+        ctx_limit=args.ctx_limit,
     )
 
     try:
