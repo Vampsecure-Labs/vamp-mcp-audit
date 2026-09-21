@@ -41,7 +41,22 @@ FASES DE AUDITORÍA
     · HTTP: verificación de TLS, autenticación, CORS
     · SSE: autenticación del endpoint
 
-  Fase 5: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
+  Fase 5: Tool Poisoning Scanner Extendido
+    · Unicode Tags ocultos en description e inputSchema (MCP-POISON-001, CRITICAL)
+    · Instrucciones ocultas en texto plano (MCP-POISON-002, HIGH)
+    · Ratio description/nombre sospechosamente alto >20:1 (MCP-POISON-003, MEDIUM)
+
+  Fase 6: SSRF via Parámetros de Tool (requiere --test-ssrf)
+    · Detección de parámetros tipo url/host/endpoint/webhook
+    · Prueba con payloads metadata cloud (AWS/GCP/Azure) y localhost
+    · SSRF confirmado (MCP-SSRF-001, CRITICAL) o potencial (MCP-SSRF-002, HIGH)
+
+  Fase 7: Rug Pull Detection
+    · Segunda llamada a tools/list al final de la auditoría
+    · Comparación con snapshot inicial: description, inputSchema, tools nuevas
+    · Redefinición de tool entre llamadas (MCP-RUGPULL-001, HIGH)
+
+  Fase 8: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
     · A01: Prompt Injection como vector de ataque
     · A02: Agencia Excesiva (exceso de permisos en tools)
     · A03: Sandboxing Inadecuado
@@ -97,15 +112,15 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "1.2"
+VERSION   = "2.0"
 
 BANNER = r"""
-__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___ 
+__   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
 \ \ / /_\ |  \/  | _ \/ __| __/ __| | | | _ \ __| |    /_\ | _ ) __|
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-mcp-audit v1.2 · MCP Security Auditor
+  vamp-mcp-audit v2.0 · MCP Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -259,6 +274,48 @@ def _cargar_mcp_payloads() -> List[str]:
 
 # Cache de payloads cargados al inicio (evita re-lectura por cada tool)
 _MCP_INJECTION_PAYLOADS: List[str] = _cargar_mcp_payloads()
+
+
+def _extraer_valores_schema(schema: Dict) -> List[str]:
+    """
+    Extrae valores de texto de los campos de un schema JSON de tool MCP.
+
+    Recorre las propiedades del schema y recoge:
+    - Valores de campos 'enum' (listas cerradas de valores posibles)
+    - Descriptions de cada campo del schema
+
+    Útil para buscar instrucciones ocultas en valores que el agente puede
+    leer al construir el contexto de llamada a la tool.
+
+    Parámetros
+    ----------
+    schema : Dict del inputSchema de la tool
+
+    Retorna
+    -------
+    Lista de cadenas de texto extraídas del schema
+    """
+    valores: List[str] = []
+    if not isinstance(schema, dict):
+        return valores
+
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return valores
+
+    for field_def in properties.values():
+        if not isinstance(field_def, dict):
+            continue
+        # Valores de enum (lista cerrada de opciones)
+        for val in field_def.get("enum", []):
+            if isinstance(val, str) and val:
+                valores.append(val)
+        # Description del campo del schema
+        field_desc = field_def.get("description", "")
+        if isinstance(field_desc, str) and field_desc:
+            valores.append(field_desc)
+
+    return valores
 
 # ---------------------------------------------------------------------------
 # Patrones de tools peligrosas — Fase 3: Auditoría de Privilegios y Permisos
@@ -430,6 +487,7 @@ class MCPAuditor:
         timeout: int = 10,
         verbose: bool = False,
         ctx_limit: int = 32000,
+        test_ssrf: bool = False,
     ) -> None:
         """
         Inicializa el auditor con el target y la configuración de sesión.
@@ -440,13 +498,15 @@ class MCPAuditor:
         scope_file : Ruta a fichero de scope (opcional, formato JSON)
         timeout    : Timeout en segundos para peticiones HTTP
         verbose    : Activa output detallado en consola
-        ctx_limit  : Umbral en caracteres para la alerta de context overflow (Fase 6)
+        ctx_limit  : Umbral en caracteres para la alerta de context overflow (Fase 9)
+        test_ssrf  : Activa las pruebas activas SSRF en la Fase 6 (opt-in)
         """
         self.target      = target.rstrip("/")
         self.scope_file  = scope_file
         self.timeout     = aiohttp.ClientTimeout(total=timeout)
         self.verbose     = verbose
         self.ctx_limit   = ctx_limit
+        self.test_ssrf   = test_ssrf
         self.findings:   List[Finding] = []
         self.server_info: Dict = {}
         self.tools:      List[Dict] = []
@@ -1691,8 +1751,8 @@ class MCPAuditor:
 
         Hallazgos posibles
         ------------------
-        MCP-CTX-001 : Agotamiento de ventana de contexto por descripciones (HIGH)
-        MCP-CTX-002 : Superficie de descripciones grande (MEDIUM)
+        MCP-CTX-001 : Agotamiento de ventana de contexto por descripciones (HIGH)  → Fase 9
+        MCP-CTX-002 : Superficie de descripciones grande (MEDIUM)                  → Fase 9
         """
         # Tamaño total acumulado de todas las descripciones de tools (en caracteres)
         total_chars = sum(len(t.get("description", "")) for t in tools)
@@ -1738,7 +1798,7 @@ class MCPAuditor:
                     "no deben superar los 500 caracteres. Separar la documentación extensa "
                     "en campos de ayuda secundarios, no en la descripción principal."
                 ),
-                phase=6,
+                phase=9,
                 owasp="A02",
                 evidence=(
                     f"Total chars: {total_chars} / umbral {umbral_high}. "
@@ -1764,13 +1824,490 @@ class MCPAuditor:
                     "Apuntar a descripciones concisas (< 200 caracteres) centradas en "
                     "el propósito de la tool, no en su implementación."
                 ),
-                phase=6,
+                phase=9,
                 evidence=f"Total chars: {total_chars} / umbral MEDIUM {UMBRAL_MEDIUM}",
             ))
         else:
             self.console.print(
                 f"  [green]✓[/green] Tamaño de descripciones OK: "
                 f"[dim]{total_chars} chars[/dim] (umbral: {umbral_high})"
+            )
+
+    # -----------------------------------------------------------------------
+    # FASE 5: Tool Poisoning Scanner Extendido
+    # -----------------------------------------------------------------------
+
+    async def audit_tool_poisoning_scanner(self, tools: List[Dict]) -> None:
+        """
+        FASE 5: Escáner extendido de tool poisoning con tres vectores específicos:
+
+        MCP-POISON-001 (CRITICAL): Caracteres Unicode Tags ocultos en description
+          o en valores del inputSchema (ASCII smuggling invisible para el humano).
+        MCP-POISON-002 (HIGH): Instrucciones ocultas en texto plano en description
+          o en enum values del schema (ignore previous, override, system:, etc.).
+        MCP-POISON-003 (MEDIUM): Ratio description/nombre mayor de 20:1 — indicador
+          de contenido oculto o instrucciones embebidas en una description desproporcionada.
+
+        Complementa la Fase 2 (patrones avanzados de inyección) con estos detectores
+        más directos y con IDs de finding normalizados para correlación.
+        """
+        if not tools:
+            self.console.print("  [yellow]⚠[/yellow] Sin tools para analizar en Fase 5")
+            return
+
+        # Patrones de instrucción oculta en texto plano (simples y directos)
+        _PATRONES_INSTRUCCION_OCULTA: List[re.Pattern] = [
+            re.compile(r"ignore\s+previous",    re.IGNORECASE),
+            re.compile(r"\bdisregard\b",         re.IGNORECASE),
+            re.compile(r"\boverride\b",           re.IGNORECASE),
+            re.compile(r"system\s*:",             re.IGNORECASE),
+            re.compile(r"assistant\s*:",          re.IGNORECASE),
+            re.compile(r"<\s*system\s*>",         re.IGNORECASE),
+            re.compile(r"\bAct\s+as\b",           re.IGNORECASE),
+            re.compile(r"you\s+are\s+now",        re.IGNORECASE),
+            re.compile(r"new\s+instructions",     re.IGNORECASE),
+        ]
+
+        hallazgos_count = 0
+
+        for tool in tools:
+            tool_name = tool.get("name", "sin_nombre")
+            desc      = tool.get("description") or ""
+            schema    = tool.get("inputSchema") or {}
+
+            # Extraer valores de texto del schema (enum values + descriptions de campos)
+            schema_vals = _extraer_valores_schema(schema)
+
+            # ── MCP-POISON-001: Unicode Tags ocultos ─────────────────────────────
+            encontrado_desc, decodificado_desc, num_desc = _detectar_ascii_smuggling_mcp(desc)
+
+            # Verificar también en valores del inputSchema
+            encontrado_schema = False
+            decodificado_schema = ""
+            num_schema = 0
+            for val in schema_vals:
+                enc, dec, n = _detectar_ascii_smuggling_mcp(val)
+                if enc:
+                    encontrado_schema = True
+                    decodificado_schema += dec + " "
+                    num_schema += n
+
+            if encontrado_desc or encontrado_schema:
+                total_chars   = num_desc + num_schema
+                decoded_joint = " | ".join(
+                    filter(None, [decodificado_desc, decodificado_schema.strip()])
+                )
+                ubicacion = (
+                    "description e inputSchema"
+                    if encontrado_desc and encontrado_schema
+                    else ("description" if encontrado_desc else "inputSchema")
+                )
+                self._add_finding(Finding(
+                    tool=tool_name,
+                    severity="CRITICAL",
+                    type="MCP-POISON-001",
+                    title=f"[{tool_name}] MCP-POISON-001: Unicode Tags ocultos detectados",
+                    description=(
+                        f"La tool '{tool_name}' contiene {total_chars} caracteres Unicode Tags "
+                        f"invisibles (U+E0000-U+E007F) en su {ubicacion}. "
+                        "Estos caracteres son completamente invisibles para el humano en cualquier "
+                        "inspector visual, pero el LLM los procesa con normalidad, permitiendo "
+                        "prompt injection indetectable (ASCII smuggling)."
+                    ),
+                    affected=f"tool:{tool_name}",
+                    recommendation=(
+                        "Rechazar cualquier tool cuya description o inputSchema contenga caracteres "
+                        "del bloque Unicode Tags (U+E0000-U+E007F). Implementar validación Unicode "
+                        "estricta en el proxy o gateway MCP."
+                    ),
+                    phase=5,
+                    owasp="A01",
+                    evidence=(
+                        f"Chars Unicode Tags: {total_chars}. Decodificado: '{decoded_joint[:200]}'"
+                        if decoded_joint
+                        else f"Chars Unicode Tags invisibles: {total_chars}"
+                    ),
+                ))
+                hallazgos_count += 1
+
+            # ── MCP-POISON-002: Instrucciones ocultas en texto plano ──────────────
+            # Buscar en description y en los valores del schema
+            textos_a_revisar = [("description", desc)] + [
+                ("schema_val", v) for v in schema_vals if v
+            ]
+            poison002_encontrado = False
+            for fuente, texto in textos_a_revisar:
+                if not texto or poison002_encontrado:
+                    continue
+                for patron in _PATRONES_INSTRUCCION_OCULTA:
+                    match = patron.search(texto)
+                    if match:
+                        self._add_finding(Finding(
+                            tool=tool_name,
+                            severity="HIGH",
+                            type="MCP-POISON-002",
+                            title=f"[{tool_name}] MCP-POISON-002: Instrucción oculta en texto plano",
+                            description=(
+                                f"La tool '{tool_name}' contiene un patrón de instrucción oculta "
+                                f"en {fuente}: '{match.group(0)}'. Este tipo de instrucción "
+                                "está diseñado para manipular el comportamiento del agente LLM "
+                                "que procese la descripción de esta tool."
+                            ),
+                            affected=f"tool:{tool_name}",
+                            recommendation=(
+                                "Eliminar o aislar la tool. Revisar el origen del servidor MCP "
+                                "y auditar los logs del agente para detectar comportamiento previo anómalo."
+                            ),
+                            phase=5,
+                            owasp="A01",
+                            evidence=(
+                                f"Patrón: '{patron.pattern}' → '{match.group(0)[:100]}' "
+                                f"en {fuente}: '{texto[:150]}'"
+                            ),
+                        ))
+                        hallazgos_count += 1
+                        poison002_encontrado = True
+                        break  # Un hallazgo por tool (evitar duplicados)
+                if poison002_encontrado:
+                    break
+
+            # ── MCP-POISON-003: Ratio description/nombre > 20:1 ──────────────────
+            nombre_len = len(tool_name)
+            desc_len   = len(desc)
+            if nombre_len > 0 and desc_len > 0:
+                ratio = desc_len / nombre_len
+                if ratio > 20:
+                    self._add_finding(Finding(
+                        tool=tool_name,
+                        severity="MEDIUM",
+                        type="MCP-POISON-003",
+                        title=f"[{tool_name}] MCP-POISON-003: Description sospechosamente larga vs nombre",
+                        description=(
+                            f"La tool '{tool_name}' (nombre: {nombre_len} chars) tiene una "
+                            f"description de {desc_len} caracteres, con un ratio "
+                            f"description/nombre de {ratio:.1f}:1 (umbral: 20:1). "
+                            "Descriptions desproporcionadamente largas respecto al nombre de la "
+                            "tool son un indicador habitual de contenido oculto o instrucciones "
+                            "embebidas para el agente."
+                        ),
+                        affected=f"tool:{tool_name}.description",
+                        recommendation=(
+                            "Revisar la description completa de la tool. Las descriptions deben "
+                            "ser concisas y proporcionales al nombre y función de la tool."
+                        ),
+                        phase=5,
+                        owasp="A01",
+                        evidence=(
+                            f"Nombre: {nombre_len} chars, Description: {desc_len} chars, "
+                            f"Ratio: {ratio:.1f}:1"
+                        ),
+                    ))
+                    hallazgos_count += 1
+
+        if hallazgos_count == 0:
+            self.console.print(
+                "  [green]✓[/green] Sin indicadores de tool poisoning avanzados (Fase 5)"
+            )
+        else:
+            self.console.print(
+                f"  [bold red]✗[/bold red] {hallazgos_count} hallazgo(s) de tool poisoning avanzado"
+            )
+
+    # -----------------------------------------------------------------------
+    # FASE 6: SSRF via Parámetros de Tool
+    # -----------------------------------------------------------------------
+
+    async def audit_ssrf_parameters(
+        self,
+        session: aiohttp.ClientSession,
+        tools: List[Dict],
+    ) -> None:
+        """
+        FASE 6: Prueba activa de SSRF mediante parámetros de tool que aceptan
+        URLs o endpoints. Solo se ejecuta si se pasa --test-ssrf (opt-in).
+
+        Para cada tool con parámetros sospechosos (url, endpoint, host, target,
+        uri, path, webhook, callback, redirect, proxy, server, address), invoca
+        la tool con payloads SSRF y analiza la respuesta:
+
+        MCP-SSRF-001 (CRITICAL): SSRF confirmado — respuesta contiene indicadores
+          de metadata cloud (AWS/GCP/Azure).
+        MCP-SSRF-002 (HIGH): SSRF potencial — la tool devolvió respuesta no vacía
+          y no error de red al recibir una URL interna como parámetro.
+        """
+        if not self.test_ssrf:
+            self.console.print(
+                "  [dim]↳ Fase 6 SSRF desactivada (pasar --test-ssrf para activar pruebas activas)[/dim]"
+            )
+            return
+
+        if not tools:
+            self.console.print("  [yellow]⚠[/yellow] Sin tools para analizar SSRF en Fase 6")
+            return
+
+        # Nombres de parámetros que sugieren entrada de URL o endpoint remoto
+        PARAMS_SSRF_CANDIDATOS = {
+            "url", "endpoint", "host", "target", "uri", "path",
+            "webhook", "callback", "redirect", "proxy", "server", "address",
+        }
+
+        # Payloads SSRF: endpoints de metadata cloud y redes internas
+        PAYLOADS_SSRF = [
+            "http://169.254.169.254/latest/meta-data/",          # AWS metadata
+            "http://metadata.google.internal/computeMetadata/v1/",  # GCP metadata
+            "http://169.254.169.254/metadata/instance",          # Azure metadata
+            "http://127.0.0.1:80/",                              # localhost
+            "http://10.0.0.1/",                                  # red interna típica
+        ]
+
+        # Indicadores en la respuesta que confirman SSRF exitoso a metadata cloud
+        CONFIRMADORES_SSRF = [
+            "ami-id", "instance-type", "instance-id", "local-ipv4", "local-hostname",
+            "computeMetadata", "serviceAccounts",
+            "subscriptionId", "resourceGroupName",
+        ]
+
+        ssrf_count = 0
+
+        for tool in tools:
+            tool_name  = tool.get("name", "sin_nombre")
+            schema     = tool.get("inputSchema") or {}
+            properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+
+            # Filtrar parámetros candidatos de tipo string sin enum (sin restricciones)
+            params_candidatos = [
+                fname for fname, fdef in properties.items()
+                if fname.lower() in PARAMS_SSRF_CANDIDATOS
+                and isinstance(fdef, dict)
+                and fdef.get("type", "string") == "string"
+                and "enum" not in fdef
+            ]
+
+            if not params_candidatos:
+                continue
+
+            self._log(f"Tool '{tool_name}': parámetros SSRF candidatos: {params_candidatos}")
+
+            # Probar cada parámetro candidato con cada payload SSRF
+            for param_name in params_candidatos:
+                critico_ya_reportado = False
+                for payload in PAYLOADS_SSRF:
+                    if critico_ya_reportado:
+                        break
+                    try:
+                        resp = await self._json_rpc(session, "tools/call", {
+                            "name":      tool_name,
+                            "arguments": {param_name: payload},
+                        })
+
+                        if resp is None:
+                            continue  # Sin respuesta — no es indicador
+
+                        resp_str = json.dumps(resp).lower()
+
+                        # Verificar SSRF confirmado por indicadores de metadata cloud
+                        if any(ind.lower() in resp_str for ind in CONFIRMADORES_SSRF):
+                            self._add_finding(Finding(
+                                tool=tool_name,
+                                severity="CRITICAL",
+                                type="MCP-SSRF-001",
+                                title=f"[{tool_name}] MCP-SSRF-001: SSRF confirmado a metadata cloud",
+                                description=(
+                                    f"La tool '{tool_name}' es vulnerable a SSRF: al invocar "
+                                    f"'{param_name}' con la URL '{payload}', la respuesta contiene "
+                                    "indicadores de metadata cloud (AWS/GCP/Azure), confirmando "
+                                    "que el servidor MCP realizó la petición al endpoint interno."
+                                ),
+                                affected=f"tool:{tool_name}.{param_name}",
+                                recommendation=(
+                                    "Implementar validación estricta de URLs: allowlist de dominios "
+                                    "permitidos, rechazo de rangos IP privados (RFC 1918, "
+                                    "169.254.0.0/16) y bloqueo de metadata endpoints cloud. "
+                                    "Usar un proxy de egress con controles de acceso."
+                                ),
+                                phase=6,
+                                owasp="A04",
+                                evidence=(
+                                    f"Payload: {payload}, "
+                                    f"Respuesta (fragmento): {json.dumps(resp)[:300]}"
+                                ),
+                            ))
+                            ssrf_count += 1
+                            critico_ya_reportado = True
+                            break
+
+                        # SSRF potencial: respuesta no vacía, sin error de red
+                        result = resp.get("result")
+                        error  = resp.get("error")
+                        if result and not error:
+                            resp_snippet = json.dumps(result)
+                            # Excluir respuestas de error de validación de la propia tool
+                            indicadores_error = (
+                                "invalid", "error", "not found", "failed",
+                                "connection refused", "timeout",
+                            )
+                            if len(resp_snippet) > 10 and not any(
+                                kw in resp_snippet.lower() for kw in indicadores_error
+                            ):
+                                self._add_finding(Finding(
+                                    tool=tool_name,
+                                    severity="HIGH",
+                                    type="MCP-SSRF-002",
+                                    title=f"[{tool_name}] MCP-SSRF-002: SSRF potencial detectado",
+                                    description=(
+                                        f"La tool '{tool_name}' devolvió una respuesta no vacía "
+                                        f"al invocar '{param_name}' con la URL SSRF '{payload}'. "
+                                        "Esto sugiere que el servidor realizó la petición HTTP "
+                                        "al endpoint indicado sin validar el destino."
+                                    ),
+                                    affected=f"tool:{tool_name}.{param_name}",
+                                    recommendation=(
+                                        "Validar y restringir las URLs aceptadas: allowlist de "
+                                        "dominios y bloqueo de rangos IP privados."
+                                    ),
+                                    phase=6,
+                                    owasp="A04",
+                                    evidence=(
+                                        f"Payload: {payload}, "
+                                        f"Respuesta: {resp_snippet[:200]}"
+                                    ),
+                                ))
+                                ssrf_count += 1
+                                break  # Un hallazgo HIGH por parámetro
+
+                    except Exception as exc:
+                        self._log(
+                            f"Error en prueba SSRF para {tool_name}.{param_name}: {exc}"
+                        )
+                        continue
+
+        if ssrf_count == 0:
+            self.console.print(
+                "  [green]✓[/green] Sin vulnerabilidades SSRF detectadas en parámetros de tools"
+            )
+        else:
+            self.console.print(
+                f"  [bold red]✗[/bold red] {ssrf_count} hallazgo(s) SSRF detectados"
+            )
+
+    # -----------------------------------------------------------------------
+    # FASE 7: Rug Pull Detection
+    # -----------------------------------------------------------------------
+
+    async def audit_rug_pull(
+        self,
+        session: aiohttp.ClientSession,
+        tools_inicial: List[Dict],
+    ) -> None:
+        """
+        FASE 7: Detección de rug pull — redefinición dinámica de tools entre
+        llamadas. Llama a tools/list por segunda vez y compara con el snapshot
+        tomado al inicio de la auditoría (Fase 1).
+
+        Un servidor MCP malicioso puede presentar tools benignas en el handshake
+        y reemplazarlas por versiones envenenadas después, sabiendo que el auditor
+        o el agente ya ha evaluado la lista original.
+
+        MCP-RUGPULL-001 (HIGH):
+          - Tool nueva entre llamadas (no estaba en el snapshot inicial)
+          - Tool que cambió description o inputSchema entre llamadas
+        """
+        self._log("Segunda llamada a tools/list para detección de rug pull")
+        resp = await self._json_rpc(session, "tools/list")
+
+        if resp is None:
+            self.console.print(
+                "  [yellow]⚠[/yellow] No se pudo obtener segunda lista de tools para rug pull"
+            )
+            return
+
+        result     = resp.get("result", {})
+        tools_final = result.get("tools", [])
+
+        # Índice por nombre para comparación O(1)
+        inicial_idx = {t.get("name"): t for t in tools_inicial}
+        final_idx   = {t.get("name"): t for t in tools_final}
+
+        rugpull_count = 0
+
+        # --- Detectar tools NUEVAS (presentes en segunda llamada, ausentes en primera) ---
+        for tool_name in final_idx:
+            if tool_name not in inicial_idx:
+                self._add_finding(Finding(
+                    tool=tool_name,
+                    severity="HIGH",
+                    type="MCP-RUGPULL-001",
+                    title=f"[{tool_name}] MCP-RUGPULL-001: Tool nueva entre llamadas (rug pull)",
+                    description=(
+                        f"La tool '{tool_name}' no estaba presente en la primera llamada a "
+                        "tools/list pero sí en la segunda. Un servidor MCP malicioso puede "
+                        "introducir tools envenenadas dinámicamente después del handshake "
+                        "inicial, cuando el auditor o el agente ya ha evaluado la lista."
+                    ),
+                    affected=f"tool:{tool_name}",
+                    recommendation=(
+                        "El agente debe revalidar el conjunto de tools antes de cada invocación "
+                        "crítica. Implementar verificación de integridad (hash firmado) del "
+                        "conjunto de tools y alertar ante cualquier adición no autorizada."
+                    ),
+                    phase=7,
+                    owasp="A01",
+                    evidence=f"Tool '{tool_name}' ausente en primera llamada, presente en segunda",
+                ))
+                rugpull_count += 1
+
+        # --- Detectar tools que CAMBIARON (description o schema modificados) ---
+        for tool_name, t_final in final_idx.items():
+            if tool_name not in inicial_idx:
+                continue  # Ya reportado como nueva
+
+            t_inicial      = inicial_idx[tool_name]
+            desc_inicial   = t_inicial.get("description", "")
+            desc_final     = t_final.get("description", "")
+            schema_inicial = json.dumps(t_inicial.get("inputSchema", {}), sort_keys=True)
+            schema_final   = json.dumps(t_final.get("inputSchema", {}),   sort_keys=True)
+
+            cambios = []
+            if desc_inicial != desc_final:
+                cambios.append("description")
+            if schema_inicial != schema_final:
+                cambios.append("inputSchema")
+
+            if cambios:
+                self._add_finding(Finding(
+                    tool=tool_name,
+                    severity="HIGH",
+                    type="MCP-RUGPULL-001",
+                    title=f"[{tool_name}] MCP-RUGPULL-001: Tool redefinida entre llamadas (rug pull)",
+                    description=(
+                        f"La tool '{tool_name}' cambió su {' y '.join(cambios)} entre la "
+                        "primera y la segunda llamada a tools/list. Este patrón es conocido "
+                        "como 'rug pull': el servidor presenta una tool benigna en el handshake "
+                        "y la reemplaza por una versión maliciosa durante la sesión."
+                    ),
+                    affected=f"tool:{tool_name}",
+                    recommendation=(
+                        "Implementar verificación de integridad del conjunto de tools mediante "
+                        "hash firmado. El agente debe rechazar cualquier modificación de tool "
+                        "no autorizada durante la sesión. Auditar el código del servidor MCP."
+                    ),
+                    phase=7,
+                    owasp="A01",
+                    evidence=(
+                        f"Campos modificados: {', '.join(cambios)}. "
+                        f"Description antes: '{desc_inicial[:100]}' → "
+                        f"después: '{desc_final[:100]}'"
+                    ),
+                ))
+                rugpull_count += 1
+
+        if rugpull_count == 0:
+            self.console.print(
+                "  [green]✓[/green] Sin cambios en el conjunto de tools entre llamadas (sin rug pull)"
+            )
+        else:
+            self.console.print(
+                f"  [bold red]✗[/bold red] {rugpull_count} hallazgo(s) de rug pull detectados"
             )
 
     # -----------------------------------------------------------------------
@@ -1807,6 +2344,8 @@ class MCPAuditor:
             self.server_info = await self.fetch_server_info(session)
             self.tools       = await self.list_tools(session)
             self.resources   = await self.list_resources(session)
+            # Guardar snapshot inicial de tools para la detección de rug pull (Fase 7)
+            tools_initial_snapshot = [dict(t) for t in self.tools]
 
             # FASE 2: Detección de Tool Poisoning
             self._phase_header(2, "Detección de Tool Poisoning")
@@ -1820,13 +2359,25 @@ class MCPAuditor:
             self._phase_header(4, "Seguridad del Transporte")
             await self.audit_transport(session)
 
-            # FASE 5: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
-            self._phase_header(5, "Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)")
+            # FASE 5: Tool Poisoning Scanner Extendido (Unicode Tags, instrucciones ocultas, ratio)
+            self._phase_header(5, "Tool Poisoning Scanner — Unicode Tags, Instrucciones Ocultas, Ratio")
+            await self.audit_tool_poisoning_scanner(self.tools)
+
+            # FASE 6: SSRF via Parámetros de Tool (opt-in con --test-ssrf)
+            self._phase_header(6, "SSRF via Parámetros de Tool")
+            await self.audit_ssrf_parameters(session, self.tools)
+
+            # FASE 7: Rug Pull Detection — segunda llamada a tools/list
+            self._phase_header(7, "Rug Pull Detection — Redefinición de Tools")
+            await self.audit_rug_pull(session, tools_initial_snapshot)
+
+            # FASE 8: Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)
+            self._phase_header(8, "Evaluación de Riesgo Agéntico (OWASP Agentic AI Top 10 2026)")
             risk_summary = self.assess_agentic_risk(self.tools, self.findings)
 
-            # FASE 6: Context Window Overflow — superficie de descripciones de tools
+            # FASE 9: Context Window Overflow — superficie de descripciones de tools
             if self.tools:
-                self._phase_header(6, "Context Window Overflow — Superficie de Descripciones")
+                self._phase_header(9, "Context Window Overflow — Superficie de Descripciones")
                 await self.audit_context_overflow(self.tools)
 
         # Ordenar hallazgos por severidad descendente
@@ -2284,6 +2835,7 @@ class VampSecReport:
     <span><strong>Tools inventariadas:</strong> {len(self.tools)}</span>
     <span><strong>Recursos inventariados:</strong> {len(self.resources)}</span>
     <span><strong>Versión herramienta:</strong> {VERSION}</span>
+    <span><strong>Fases:</strong> 1·Reconocimiento 2·ToolPoisoning 3·Privilegios 4·Transporte 5·PoisoningScanner 6·SSRF 7·RugPull 8·OWASP 9·ContextOverflow</span>
   </div>
 </div>
 
@@ -2465,8 +3017,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
         dest="ctx_limit",
         help=(
             "Umbral en caracteres para la alerta HIGH de context window overflow "
-            "en la Fase 6 (default: 32000). Por encima de 8000 se emite MEDIUM; "
+            "en la Fase 9 (default: 32000). Por encima de 8000 se emite MEDIUM; "
             "por encima de N se emite HIGH."
+        ),
+    )
+    parser.add_argument(
+        "--test-ssrf",
+        action="store_true",
+        default=False,
+        dest="test_ssrf",
+        help=(
+            "Activa las pruebas activas SSRF en la Fase 6 (opt-in, por defecto desactivado). "
+            "Invoca tools con parámetros url/host/endpoint usando payloads de metadata cloud "
+            "(AWS/GCP/Azure). ATENCIÓN: puede generar tráfico hacia endpoints internos; "
+            "usar solo en entornos autorizados."
         ),
     )
 
@@ -2494,6 +3058,7 @@ def main() -> None:
         timeout=args.timeout,
         verbose=args.verbose,
         ctx_limit=args.ctx_limit,
+        test_ssrf=args.test_ssrf,
     )
 
     try:
