@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vamp-mcp-audit"
-version = "2.0"
+version = "2.1"
 description = "Model Context Protocol (MCP) endpoint security auditor"
 readme = "README.md"
 license = { text = "MIT" }

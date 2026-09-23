@@ -112,7 +112,7 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "2.0"
+VERSION   = "2.1"
 
 BANNER = r"""
 __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
@@ -120,7 +120,7 @@ __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
  \ V / _ \| |\/| |  _/\__ \ _| (__| |_| |   / _|| |__ / _ \| _ \__ \
   \_/_/ \_\_|  |_|_|  |___/___\___|\___/|_|_\___|____/_/ \_\___/___/
   by Antonio Hernandez "Belky" — VampSecure Studios
-  vamp-mcp-audit v2.0 · MCP Security Auditor
+  vamp-mcp-audit v2.1 · MCP Security Auditor
   ────────────────────────────────────────────────────────────────────────
   USO EXCLUSIVO EN AUDITORÍAS AUTORIZADAS · El uso no autorizado es ilegal
 """
@@ -1857,16 +1857,24 @@ class MCPAuditor:
 
         # Patrones de instrucción oculta en texto plano (simples y directos)
         _PATRONES_INSTRUCCION_OCULTA: List[re.Pattern] = [
-            re.compile(r"ignore\s+previous",    re.IGNORECASE),
-            re.compile(r"\bdisregard\b",         re.IGNORECASE),
-            re.compile(r"\boverride\b",           re.IGNORECASE),
-            re.compile(r"system\s*:",             re.IGNORECASE),
-            re.compile(r"assistant\s*:",          re.IGNORECASE),
-            re.compile(r"<\s*system\s*>",         re.IGNORECASE),
-            re.compile(r"\bAct\s+as\b",           re.IGNORECASE),
-            re.compile(r"you\s+are\s+now",        re.IGNORECASE),
-            re.compile(r"new\s+instructions",     re.IGNORECASE),
+            re.compile(r"ignore\s+previous",           re.IGNORECASE),
+            re.compile(r"\bdisregard\b",                re.IGNORECASE),
+            re.compile(r"\boverride\b",                 re.IGNORECASE),
+            re.compile(r"system\s*:",                   re.IGNORECASE),
+            re.compile(r"assistant\s*:",                re.IGNORECASE),
+            re.compile(r"<\s*system\s*>",               re.IGNORECASE),
+            re.compile(r"\bAct\s+as\b",                 re.IGNORECASE),
+            re.compile(r"you\s+are\s+now",              re.IGNORECASE),
+            re.compile(r"new\s+instructions",           re.IGNORECASE),
+            # Patrones adicionales: inyección directa de comandos de sistema
+            re.compile(r"SYSTEM\s+OVERRIDE",            re.IGNORECASE),
+            re.compile(r"<!--\s*HIDDEN\s*:",            re.IGNORECASE),
         ]
+
+        # Patrón de caracteres Unicode invisibles de anchura cero (U+200B–U+200F, U+FEFF)
+        _RE_ZERO_WIDTH = re.compile(
+            r"[​‌‍‎‏﻿]"
+        )
 
         hallazgos_count = 0
 
@@ -1929,6 +1937,59 @@ class MCPAuditor:
                     ),
                 ))
                 hallazgos_count += 1
+
+            # ── MCP-POISON-001b: Caracteres Unicode de anchura cero (U+200B–U+200F, U+FEFF) ─
+            # Estos caracteres son invisibles y distintos del bloque Tags anterior
+            textos_zw = [("description", desc)] + [("schema_val", v) for v in schema_vals if v]
+            for fuente_zw, texto_zw in textos_zw:
+                if not texto_zw:
+                    continue
+                matches_zw = _RE_ZERO_WIDTH.findall(texto_zw)
+                if matches_zw:
+                    nombres_chars = {
+                        "​": "U+200B (ZWSP)",
+                        "‌": "U+200C (ZWNJ)",
+                        "‍": "U+200D (ZWJ)",
+                        "‎": "U+200E (LRM)",
+                        "‏": "U+200F (RLM)",
+                        "﻿": "U+FEFF (BOM/ZWNBS)",
+                    }
+                    chars_detectados = ", ".join(
+                        sorted({nombres_chars.get(c, f"U+{ord(c):04X}") for c in matches_zw})
+                    )
+                    self._add_finding(Finding(
+                        tool=tool_name,
+                        severity="CRITICAL",
+                        type="MCP-POISON-001b",
+                        title=(
+                            f"[{tool_name}] MCP-POISON-001b: Caracteres Unicode "
+                            "invisibles (zero-width) en descripción de tool"
+                        ),
+                        description=(
+                            f"La tool '{tool_name}' contiene {len(matches_zw)} caracter(es) "
+                            f"Unicode invisible(s) ({chars_detectados}) en su {fuente_zw}. "
+                            "Estos caracteres de anchura cero son imperceptibles en editores "
+                            "de texto e inspectores visuales, pero los LLMs los procesan con "
+                            "normalidad. Un servidor MCP malicioso puede usar estos caracteres "
+                            "para ocultar instrucciones de prompt injection indetectables por "
+                            "el auditor humano."
+                        ),
+                        affected=f"tool:{tool_name}.{fuente_zw}",
+                        recommendation=(
+                            "Rechazar tools cuya description o inputSchema contenga caracteres "
+                            "Unicode de anchura cero (U+200B–U+200F, U+FEFF). Implementar un "
+                            "filtro de normalización Unicode (NFKC) en el proxy MCP para "
+                            "descartar o alertar sobre estos caracteres."
+                        ),
+                        phase=5,
+                        owasp="A01",
+                        evidence=(
+                            f"{len(matches_zw)} chars invisibles en {fuente_zw}: {chars_detectados}. "
+                            f"Fragmento: '{texto_zw[:100]}'"
+                        ),
+                    ))
+                    hallazgos_count += 1
+                    break  # Un hallazgo por tool
 
             # ── MCP-POISON-002: Instrucciones ocultas en texto plano ──────────────
             # Buscar en description y en los valores del schema
@@ -2311,6 +2372,190 @@ class MCPAuditor:
             )
 
     # -----------------------------------------------------------------------
+    # FASE 10: Análisis de servidor en producción (HTTP/HTTPS sin auth)
+    # -----------------------------------------------------------------------
+
+    async def _analyze_production_server(
+        self,
+        session: aiohttp.ClientSession,
+    ) -> None:
+        """
+        FASE 10: Comprueba si el servidor MCP expone endpoints sensibles sin
+        autenticación, incluyendo descubrimiento de capacidades, enumeración
+        de tools y recursos, y configuración CORS permisiva.
+
+        MCP-PROD-001 (HIGH)  : Endpoint de info/descubrimiento accesible sin auth
+        MCP-PROD-002 (HIGH)  : tools/list accesible sin token de autenticación
+        MCP-PROD-003 (MEDIUM): CORS con Access-Control-Allow-Origin: * en servidor MCP
+        MCP-PROD-004 (MEDIUM): resources/list accesible sin autenticación
+        """
+        # Solo aplica a servidores HTTP/HTTPS (no STDIO)
+        parsed = urllib.parse.urlparse(self.target)
+        if parsed.scheme not in ("http", "https"):
+            self.console.print(
+                "  [dim]↳ Fase 10 omitida — objetivo STDIO, no HTTP/HTTPS[/dim]"
+            )
+            return
+
+        base = self.target.rstrip("/")
+
+        # ── 10.1  Endpoint de descubrimiento sin auth ─────────────────────────
+        discovery_paths = ["/.well-known/mcp", "/mcp/info", "/info", "/mcp"]
+        for path in discovery_paths:
+            try:
+                async with session.get(
+                    base + path,
+                    timeout=self.timeout,
+                ) as r:
+                    self._log(f"GET {path} → HTTP {r.status}")
+                    if r.status in (200, 201):
+                        cuerpo = await r.text(encoding="utf-8", errors="replace")
+                        self._add_finding(Finding(
+                            tool="server",
+                            severity="HIGH",
+                            type="MCP-PROD-001",
+                            title=f"Endpoint de descubrimiento MCP accesible sin auth ({path})",
+                            description=(
+                                f"El servidor MCP expone el endpoint '{path}' sin requerir "
+                                "autenticación. Este endpoint puede revelar información sobre "
+                                "las capacidades del servidor, la versión del protocolo y "
+                                "otros metadatos operativos que facilitan el reconocimiento "
+                                "previo a un ataque."
+                            ),
+                            affected=base + path,
+                            recommendation=(
+                                "Proteger todos los endpoints de descubrimiento con autenticación. "
+                                "Si el endpoint debe ser público, limitar la información expuesta "
+                                "al mínimo necesario (sin versiones internas ni configuración)."
+                            ),
+                            phase=10,
+                            owasp="A01",
+                            evidence=f"HTTP {r.status} en {path}. Cuerpo: {cuerpo[:200]}",
+                        ))
+                        break  # Un hallazgo por tipo es suficiente
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+
+        # ── 10.2  tools/list sin token ─────────────────────────────────────────
+        try:
+            resp_tools = await self._json_rpc(session, "tools/list", {})
+            if resp_tools is not None:
+                result = resp_tools.get("result") or {}
+                tools_sin_auth = result.get("tools", [])
+                if tools_sin_auth:
+                    self._add_finding(Finding(
+                        tool="server",
+                        severity="HIGH",
+                        type="MCP-PROD-002",
+                        title="tools/list enumerable sin autenticación",
+                        description=(
+                            f"El endpoint tools/list devuelve {len(tools_sin_auth)} tool(s) "
+                            "sin requerir token de autenticación. La enumeración no autenticada "
+                            "de tools permite a un atacante conocer la superficie de ataque del "
+                            "servidor MCP sin credenciales."
+                        ),
+                        affected=f"{self.target} → tools/list",
+                        recommendation=(
+                            "Implementar autenticación obligatoria (Bearer token u OAuth 2.0) "
+                            "en todos los endpoints JSON-RPC del servidor MCP, incluido tools/list. "
+                            "Devolver HTTP 401 o un error JSON-RPC -32001 ante peticiones sin token."
+                        ),
+                        phase=10,
+                        owasp="A01",
+                        evidence=(
+                            f"tools/list sin auth retornó {len(tools_sin_auth)} tools: "
+                            f"{[t.get('name','?') for t in tools_sin_auth[:5]]}"
+                        ),
+                    ))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            pass
+
+        # ── 10.3  CORS con wildcard * ─────────────────────────────────────────
+        try:
+            hdrs_preflight: Dict[str, str] = {
+                "Origin":                         "https://attacker-mcp-probe.example.com",
+                "Access-Control-Request-Method":  "POST",
+                "Access-Control-Request-Headers": "Content-Type, Authorization",
+            }
+            async with session.options(
+                base,
+                headers=hdrs_preflight,
+                timeout=self.timeout,
+            ) as r:
+                acao = r.headers.get("Access-Control-Allow-Origin", "")
+                self._log(f"OPTIONS {base} → ACAO: {acao!r}")
+                if acao == "*":
+                    self._add_finding(Finding(
+                        tool="server",
+                        severity="MEDIUM",
+                        type="MCP-PROD-003",
+                        title="CORS permisivo (Access-Control-Allow-Origin: *) en servidor MCP",
+                        description=(
+                            "El servidor MCP responde con 'Access-Control-Allow-Origin: *' "
+                            "ante una petición preflight OPTIONS. En un servidor MCP HTTP, "
+                            "un CORS wildcard permite que páginas web de cualquier origen "
+                            "realicen llamadas JSON-RPC al servidor desde el navegador del "
+                            "usuario, facilitando ataques CSRF contra el agente MCP."
+                        ),
+                        affected=base,
+                        recommendation=(
+                            "Sustituir el wildcard CORS por una lista blanca explícita de "
+                            "orígenes autorizados. El servidor MCP no debe ser accesible desde "
+                            "orígenes web arbitrarios; restringir a los clientes MCP conocidos."
+                        ),
+                        phase=10,
+                        owasp="A04",
+                        evidence=f"Access-Control-Allow-Origin: {acao}",
+                    ))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            pass
+
+        # ── 10.4  resources/list sin autenticación ────────────────────────────
+        try:
+            resp_res = await self._json_rpc(session, "resources/list", {})
+            if resp_res is not None:
+                result = resp_res.get("result") or {}
+                recursos_sin_auth = result.get("resources", [])
+                if recursos_sin_auth:
+                    self._add_finding(Finding(
+                        tool="server",
+                        severity="MEDIUM",
+                        type="MCP-PROD-004",
+                        title="resources/list enumerable sin autenticación",
+                        description=(
+                            f"El endpoint resources/list devuelve {len(recursos_sin_auth)} "
+                            "recurso(s) sin requerir token de autenticación. Un atacante puede "
+                            "conocer los ficheros, bases de datos o URIs que el servidor MCP "
+                            "expone a los agentes sin tener credenciales."
+                        ),
+                        affected=f"{self.target} → resources/list",
+                        recommendation=(
+                            "Aplicar autenticación obligatoria en resources/list. "
+                            "Los recursos expuestos por el servidor MCP pueden contener "
+                            "información sensible; su enumeración debe requerir token válido."
+                        ),
+                        phase=10,
+                        owasp="A01",
+                        evidence=(
+                            f"resources/list sin auth retornó {len(recursos_sin_auth)} recursos: "
+                            f"{[r.get('uri', r.get('name','?')) for r in recursos_sin_auth[:5]]}"
+                        ),
+                    ))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            pass
+
+        hallazgos_fase10 = [f for f in self.findings if f.phase == 10]
+        if not hallazgos_fase10:
+            self.console.print(
+                "  [green]✓[/green] Sin endpoints públicos sin auth detectados (Fase 10)"
+            )
+        else:
+            self.console.print(
+                f"  [bold red]✗[/bold red] {len(hallazgos_fase10)} hallazgo(s) de "
+                "endpoints sin autenticación en producción"
+            )
+
+    # -----------------------------------------------------------------------
     # Orquestador principal
     # -----------------------------------------------------------------------
 
@@ -2379,6 +2624,10 @@ class MCPAuditor:
             if self.tools:
                 self._phase_header(9, "Context Window Overflow — Superficie de Descripciones")
                 await self.audit_context_overflow(self.tools)
+
+            # FASE 10: Análisis de servidor en producción (endpoints públicos sin auth)
+            self._phase_header(10, "Servidor de Producción — Endpoints sin Autenticación")
+            await self._analyze_production_server(session)
 
         # Ordenar hallazgos por severidad descendente
         sorted_findings = sorted(self.findings, key=lambda f: f.order)
