@@ -90,6 +90,7 @@ import re
 import socket
 import ssl
 import sys
+import time
 import urllib.parse
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -112,7 +113,7 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "2.1"
+VERSION   = "2.2"
 
 BANNER = r"""
 __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
@@ -3199,6 +3200,96 @@ function filterFindings(sev, btn) {{
 # Punto de entrada principal
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Modo monitor continuo (v2.2)
+# ---------------------------------------------------------------------------
+
+def run_monitor_mode(args) -> None:
+    """
+    Polling continuo de auditoría MCP. Detecta cambios en hallazgos entre ciclos.
+    Persiste el estado en ~/.config/vampsec/mcp-monitor-<host>.json.
+    Sale con Ctrl+C.
+    """
+    from pathlib import Path as _Path
+
+    # Clave de estado basada en el host auditado
+    _host_key = urllib.parse.urlparse(args.target).netloc.replace(":", "_").replace(".", "_")
+    state_file = _Path.home() / ".config" / "vampsec" / f"mcp-monitor-{_host_key}.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    _console = Console()
+
+    # Cargar estado previo (dict {id: hallazgo})
+    estado_prev: dict = {}
+    if state_file.exists():
+        try:
+            estado_prev = json.loads(state_file.read_text())
+        except Exception:
+            pass
+
+    _console.print(
+        f"[bold]Modo monitor MCP activo — intervalo {args.monitor}s — Ctrl+C para salir[/]"
+    )
+
+    while True:
+        try:
+            # Ejecutar auditoría completa en modo silencioso
+            _auditor = MCPAuditor(
+                target=args.target,
+                scope_file=args.scope,
+                timeout=args.timeout,
+                verbose=False,
+                ctx_limit=args.ctx_limit,
+                test_ssrf=args.test_ssrf,
+            )
+            _findings, _ = asyncio.run(_auditor.run())
+
+            # Convertir hallazgos a dicts con id único
+            resultados = [
+                {
+                    "id":       f"{f.tool}:{f.type}:{f.title[:50]}",
+                    "tool":     f.tool,
+                    "severity": f.severity,
+                    "title":    f.title,
+                }
+                for f in _findings
+            ]
+
+            # Detectar cambios
+            nuevos    = [h for h in resultados if h["id"] not in estado_prev]
+            resueltos = [h_id for h_id in estado_prev
+                         if h_id not in {h["id"] for h in resultados}]
+
+            if nuevos:
+                _console.print(f"[red bold]⚠ {len(nuevos)} nuevo(s) hallazgo(s)[/]")
+                for h in nuevos:
+                    _console.print(
+                        f"  [red]+ [{h.get('severity','?')}] {h.get('title','?')[:80]}[/]"
+                    )
+            if resueltos:
+                _console.print(f"[green]✔ {len(resueltos)} hallazgo(s) resuelto(s)[/]")
+            if not nuevos and not resueltos:
+                _console.print(
+                    f"[dim]Sin cambios — {len(resultados)} hallazgos activos[/]"
+                )
+
+            # Guardar estado actual
+            estado_prev = {h["id"]: h for h in resultados}
+            state_file.write_text(
+                json.dumps(estado_prev, indent=2, ensure_ascii=False)
+            )
+
+            _console.print(
+                f"[dim]Próximo check en {args.monitor}s "
+                f"({datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC)[/]"
+            )
+            time.sleep(args.monitor)
+
+        except KeyboardInterrupt:
+            _console.print("[yellow]Monitor detenido.[/]")
+            break
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Construye y retorna el parser de argumentos CLI de la herramienta."""
     parser = argparse.ArgumentParser(
@@ -3282,6 +3373,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "usar solo en entornos autorizados."
         ),
     )
+    parser.add_argument(
+        "--monitor",
+        metavar="SEGUNDOS",
+        type=int,
+        default=0,
+        help="Polling continuo: re-auditar el servidor cada N segundos y alertar de cambios",
+    )
 
     return parser
 
@@ -3299,6 +3397,11 @@ def main() -> None:
             f"Recibido: {args.target}"
         )
         sys.exit(2)
+
+    # ── Modo monitor continuo ─────────────────────────────────────────────────
+    if args.monitor > 0:
+        run_monitor_mode(args)
+        return
 
     # Ejecutar auditoría
     auditor = MCPAuditor(
