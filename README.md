@@ -1,3 +1,4 @@
+<!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
 # vamp-mcp-audit
 
 **VampSecure Labs · Security Research Division**
@@ -7,6 +8,13 @@ Auditor de seguridad profesional para servidores MCP (Model Context Protocol) y 
 ---
 
 ## Instalación
+
+
+```bash
+pip install vamp-mcp-audit
+# o con Homebrew:
+brew install vampsecure-labs/labs/vamp-mcp-audit
+```
 
 ```bash
 pip install -r requirements.txt
@@ -149,3 +157,8 @@ Se cargan al iniciar el módulo — sin peticiones de red en runtime.
 
 © VampSecure Studios — VampSecure Labs Security Research Division  
 Uso exclusivo en auditorías autorizadas. El uso no autorizado es ilegal.
+
+---
+
+## Versión
+v2.1 — VampSecure Labs Security Research Division
