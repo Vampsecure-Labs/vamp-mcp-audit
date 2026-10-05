@@ -64,6 +64,14 @@ FASES DE AUDITORÍA
     · A09: Riesgo de Exfiltración de Datos
     · Cálculo de risk score agregado
 
+  Fase 11: Auditoría de Configuraciones VS Code / IDE (--vscode-config)
+    · Inventario de servidores MCP en .vscode/mcp.json y settings.json
+    · MCP-VSCODE-001: servidor STDIO con ruta/paquete externo al proyecto (supply chain)
+    · MCP-VSCODE-002: servidor HTTP sin autenticación configurada
+    · MCP-VSCODE-003: argumentos de shell peligrosos (inyección de comandos)
+    · MCP-VSCODE-005: nombre coincide con typosquatting conocido
+    · Mapeo al OWASP MCP Top 10 (propuesta VSS 2025)
+
 FORMATOS DE SALIDA
 ------------------
   Consola  · Rich con paneles por fase y tabla resumen de hallazgos
@@ -113,7 +121,7 @@ from rich import box
 # ---------------------------------------------------------------------------
 
 TOOL_NAME = "vamp-mcp-audit"
-VERSION   = "2.2"
+VERSION   = "2.3"
 
 BANNER = r"""
 __   ___   __  __ ___  ___ ___ ___ _   _ ___ ___ _      _   ___ ___
@@ -388,6 +396,216 @@ DANGEROUS_TOOL_PATTERNS: Dict[str, Dict] = {
 }
 
 # ---------------------------------------------------------------------------
+# OWASP MCP Top 10 — Propuesta Formal VampSecure Labs 2025
+# Estándar propuesto para Model Context Protocol. Distinto del Agentic AI Top 10:
+# este se centra exclusivamente en el protocolo MCP y sus superficies de ataque.
+# Namespace de hallazgos: MCP-Txx (donde xx es el número de control)
+# ---------------------------------------------------------------------------
+
+OWASP_MCP_TOP10: Dict[str, Dict] = {
+    "MCP-T01": {
+        "name": "Tool Poisoning",
+        "description": (
+            "Inyección de instrucciones maliciosas en campos description o inputSchema "
+            "de una tool MCP. El agente ejecuta las instrucciones ocultas sin que el "
+            "usuario las vea, permitiendo exfiltración de datos, ejecución de código "
+            "arbitrario o manipulación del comportamiento del agente."
+        ),
+        "cwe": "CWE-77",
+        "cvss_base": 9.3,
+        "vectors": ["unicode_tags", "hidden_instructions", "description_injection"],
+    },
+    "MCP-T02": {
+        "name": "Prompt Injection via Tool Results",
+        "description": (
+            "Un servidor MCP devuelve resultados de herramientas que contienen "
+            "instrucciones de prompt injection. El agente procesa estos resultados "
+            "como datos de confianza y ejecuta las instrucciones inyectadas, pudiendo "
+            "cambiar su comportamiento, divulgar contexto o realizar acciones no autorizadas."
+        ),
+        "cwe": "CWE-74",
+        "cvss_base": 8.8,
+        "vectors": ["tool_result_injection", "indirect_injection"],
+    },
+    "MCP-T03": {
+        "name": "Excessive Permission Scope",
+        "description": (
+            "Tools MCP con acceso a recursos más amplios de lo necesario: sistema de "
+            "ficheros sin restricción de ruta, ejecución de shell sin sandboxing, "
+            "acceso a red sin scope, o lectura de credenciales. Viola el principio "
+            "de mínimo privilegio y amplía masivamente el impacto de cualquier compromiso."
+        ),
+        "cwe": "CWE-272",
+        "cvss_base": 7.5,
+        "vectors": ["filesystem_access", "shell_execution", "credential_access"],
+    },
+    "MCP-T04": {
+        "name": "Missing Authentication",
+        "description": (
+            "Servidor MCP accesible sin autenticación: cualquier agente o usuario "
+            "puede conectarse, enumerar tools, invocarlas y acceder a recursos. "
+            "Especialmente crítico en servidores HTTP/SSE expuestos en red o Internet."
+        ),
+        "cwe": "CWE-306",
+        "cvss_base": 9.8,
+        "vectors": ["no_auth_http", "no_auth_sse", "unauthenticated_tools_list"],
+    },
+    "MCP-T05": {
+        "name": "Insecure Transport",
+        "description": (
+            "Comunicación MCP sin cifrado: HTTP en lugar de HTTPS, STDIO expuesto "
+            "a inyección de parámetros de shell, o SSE sin TLS. Permite "
+            "interceptación de datos (MitM), modificación de mensajes en tránsito "
+            "e inyección de comandos en tiempo de arranque."
+        ),
+        "cwe": "CWE-319",
+        "cvss_base": 7.4,
+        "vectors": ["http_no_tls", "stdio_arg_injection", "sse_no_tls"],
+    },
+    "MCP-T06": {
+        "name": "Tool Rug Pull / Schema Drift",
+        "description": (
+            "Un servidor MCP modifica la definición (description, inputSchema, nombre) "
+            "de una tool entre llamadas sin notificación. El agente asume invarianza "
+            "del schema; un atacante puede cambiar el contrato de una tool benigna "
+            "para redirigir parámetros o alterar el comportamiento en tiempo de ejecución."
+        ),
+        "cwe": "CWE-362",
+        "cvss_base": 7.2,
+        "vectors": ["schema_redefinition", "description_swap", "tool_addition"],
+    },
+    "MCP-T07": {
+        "name": "SSRF via Tool Parameters",
+        "description": (
+            "Tools MCP que aceptan parámetros de tipo URL/host/endpoint permiten "
+            "a un atacante forzar peticiones a servicios internos de la red donde "
+            "corre el servidor. Desde un endpoint público MCP se puede alcanzar "
+            "metadatos cloud (IMDS), servicios internos o bases de datos privadas."
+        ),
+        "cwe": "CWE-918",
+        "cvss_base": 8.6,
+        "vectors": ["url_parameter", "host_parameter", "webhook_parameter"],
+    },
+    "MCP-T08": {
+        "name": "Sensitive Data Exfiltration",
+        "description": (
+            "Tools MCP con capacidad de leer credenciales, tokens, claves privadas, "
+            "variables de entorno o datos personales, combinadas con tools de red "
+            "(HTTP, email, webhook), crean una cadena de exfiltración automática "
+            "que un agente comprometido puede ejecutar sin intervención humana."
+        ),
+        "cwe": "CWE-359",
+        "cvss_base": 9.1,
+        "vectors": ["env_var_access", "credential_read", "network_send_chain"],
+    },
+    "MCP-T09": {
+        "name": "Malicious Sampling Requests",
+        "description": (
+            "Servidores MCP que usan la capacidad de sampling (sampling/createMessage) "
+            "para enviar prompts manipulados al modelo del cliente. El servidor "
+            "malicioso puede influir en la toma de decisiones del agente, extraer "
+            "información del contexto o inyectar instrucciones en la ventana del modelo."
+        ),
+        "cwe": "CWE-77",
+        "cvss_base": 8.0,
+        "vectors": ["sampling_create_message", "context_manipulation"],
+    },
+    "MCP-T10": {
+        "name": "Supply Chain Compromise",
+        "description": (
+            "Instalación de servidores MCP maliciosos a través de paquetes npm/pip "
+            "comprometidos, repositorios falsos o typosquatting. Un servidor MCP "
+            "con permisos de filesystem/shell/network comprometido desde el origen "
+            "tiene acceso completo al entorno del desarrollador desde el inicio."
+        ),
+        "cwe": "CWE-1357",
+        "cvss_base": 9.5,
+        "vectors": ["malicious_package", "typosquatting", "vscode_extension_mcp"],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Registro de vulnerabilidades conocidas MCP — Namespace VSS-MCP
+# (Equivalente CVE propio hasta que MITRE establezca un namespace oficial MCP)
+# ---------------------------------------------------------------------------
+
+_VSS_MCP_CVE_REGISTRY: Dict[str, Dict] = {
+    "VSS-MCP-2025-001": {
+        "title": "STDIO MCP arg injection via shell metacharacters",
+        "description": (
+            "Los servidores MCP sobre STDIO lanzados mediante shell (sh -c, /bin/sh) "
+            "son vulnerables a inyección de argumentos si el path o args contienen "
+            "metacaracteres de shell. OX Security publicó esta clase en abril 2026."
+        ),
+        "severity": "CRITICAL",
+        "cvss":  9.8,
+        "cwe":   "CWE-78",
+        "refs":  ["https://www.ox.security/mcp-stdin-injection"],
+        "mcp_top10": "MCP-T05",
+        "affects": ["stdio_transport"],
+    },
+    "VSS-MCP-2025-002": {
+        "title": "Unicode Tags invisible prompt injection in tool descriptions",
+        "description": (
+            "Caracteres del bloque Unicode Tags (U+E0000–U+E007F) son invisibles "
+            "en todos los editores y terminales estándar, pero los modelos de lenguaje "
+            "los procesan como texto. Permiten instrucciones ocultas en descriptions "
+            "que los humanos no pueden revisar pero el modelo ejecuta."
+        ),
+        "severity": "CRITICAL",
+        "cvss":  9.3,
+        "cwe":   "CWE-116",
+        "refs":  [],
+        "mcp_top10": "MCP-T01",
+        "affects": ["tool_description", "input_schema"],
+    },
+    "VSS-MCP-2025-003": {
+        "title": "Unauthenticated tools/list endpoint exposure",
+        "description": (
+            "Servidores MCP HTTP/SSE que no requieren autenticación para la llamada "
+            "tools/list permiten a cualquier actor enumerar el catálogo completo de "
+            "herramientas y sus schemas, facilitando el reconocimiento previo a un ataque."
+        ),
+        "severity": "HIGH",
+        "cvss":  7.5,
+        "cwe":   "CWE-306",
+        "refs":  [],
+        "mcp_top10": "MCP-T04",
+        "affects": ["http_transport", "sse_transport"],
+    },
+    "VSS-MCP-2025-004": {
+        "title": "Tool schema rug-pull between agent calls",
+        "description": (
+            "Un servidor MCP puede cambiar la description o inputSchema de una tool "
+            "entre la llamada de reconocimiento del agente (tools/list) y la llamada "
+            "de ejecución (tools/call), alterando el contrato y potencialmente "
+            "engañando al agente para ejecutar acciones diferentes a las aprobadas."
+        ),
+        "severity": "HIGH",
+        "cvss":  7.2,
+        "cwe":   "CWE-362",
+        "refs":  [],
+        "mcp_top10": "MCP-T06",
+        "affects": ["tool_schema"],
+    },
+    "VSS-MCP-2025-005": {
+        "title": "SSRF via MCP tool URL parameters to cloud IMDS",
+        "description": (
+            "Tools MCP que aceptan parámetros de tipo URL sin validación de destino "
+            "permiten peticiones SSRF a endpoints de metadatos de cloud (AWS 169.254.169.254, "
+            "GCP metadata.google.internal, Azure 169.254.169.254/metadata) desde el "
+            "servidor, filtrando credenciales IAM."
+        ),
+        "severity": "CRITICAL",
+        "cvss":  9.0,
+        "cwe":   "CWE-918",
+        "refs":  [],
+        "mcp_top10": "MCP-T07",
+        "affects": ["tool_parameters"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Mapeo OWASP Agentic AI Top 10 2026
 # ---------------------------------------------------------------------------
 
@@ -489,6 +707,7 @@ class MCPAuditor:
         verbose: bool = False,
         ctx_limit: int = 32000,
         test_ssrf: bool = False,
+        vscode_dir: Optional[Path] = None,
     ) -> None:
         """
         Inicializa el auditor con el target y la configuración de sesión.
@@ -501,6 +720,7 @@ class MCPAuditor:
         verbose    : Activa output detallado en consola
         ctx_limit  : Umbral en caracteres para la alerta de context overflow (Fase 9)
         test_ssrf  : Activa las pruebas activas SSRF en la Fase 6 (opt-in)
+        vscode_dir : Directorio raíz del proyecto para auditar .vscode/mcp.json (Fase 11)
         """
         self.target      = target.rstrip("/")
         self.scope_file  = scope_file
@@ -508,6 +728,7 @@ class MCPAuditor:
         self.verbose     = verbose
         self.ctx_limit   = ctx_limit
         self.test_ssrf   = test_ssrf
+        self.vscode_dir  = vscode_dir
         self.findings:   List[Finding] = []
         self.server_info: Dict = {}
         self.tools:      List[Dict] = []
@@ -2557,6 +2778,223 @@ class MCPAuditor:
             )
 
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # FASE 11: Auditoría de configuraciones VS Code / IDE para MCP
+    # -----------------------------------------------------------------------
+
+    def audit_vscode_config(self, base_dir: Optional[Path] = None) -> None:
+        """
+        FASE 11: Audita configuraciones VS Code (y otros IDEs) para detectar
+        servidores MCP locales con riesgos de seguridad.
+
+        Examina:
+          · .vscode/mcp.json     — configuración de servidores MCP específica de VS Code
+          · .vscode/settings.json — mcp.servers embebido en configuración general
+          · Directorio de extensiones de VS Code (~/.vscode/extensions/)
+
+        Hallazgos emitidos:
+          MCP-VSCODE-001 (CRITICAL): servidor MCP de tipo stdio con ruta externa al proyecto
+          MCP-VSCODE-002 (HIGH)    : servidor MCP HTTP sin autenticación en configuración
+          MCP-VSCODE-003 (HIGH)    : servidor MCP de tipo stdio con argumentos shell peligrosos
+          MCP-VSCODE-004 (MEDIUM)  : servidor MCP con acceso a filesystem sin restricción de ruta
+          MCP-VSCODE-005 (MEDIUM)  : nombre de servidor MCP coincide con paquete de typosquatting conocido
+          MCP-VSCODE-006 (INFO)    : inventario completo de servidores MCP configurados
+        """
+        base = base_dir or Path.cwd()
+        candidatos = [
+            base / ".vscode" / "mcp.json",
+            base / ".vscode" / "settings.json",
+            Path.home() / ".vscode" / "mcp.json",
+            Path.home() / "Library" / "Application Support" / "Code" / "User" / "settings.json",
+            Path.home() / ".config" / "Code" / "User" / "settings.json",
+        ]
+
+        # Patrones de argumentos de shell peligrosos para servidores STDIO
+        _SHELL_DANGER_RE = re.compile(
+            r"(?:;|\||&&|\$\(|`|>|<|>>|sh\s+-c|bash\s+-c|eval|exec\b)",
+            re.IGNORECASE,
+        )
+        # Nombres de paquetes conocidos de typosquatting MCP (muestra representativa)
+        _KNOWN_TYPOSQUATS = {
+            "mcpserver", "mcp-server-filesystem2", "mcp-server-files",
+            "mcp-servers", "mcp-server-official", "mcp_filesystem",
+            "model-context-protocol-server", "anthropic-mcp",
+        }
+
+        servidores_encontrados: list[dict] = []
+
+        for config_path in candidatos:
+            if not config_path.exists():
+                continue
+
+            try:
+                raw = config_path.read_text(encoding="utf-8", errors="replace")
+                data = json.loads(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            # Normalizar: mcp.json tiene {servers: {...}}; settings.json tiene mcp.servers:{...}
+            servidores: dict = {}
+            if "servers" in data:
+                servidores = data["servers"]
+            elif "mcp" in data and isinstance(data["mcp"], dict):
+                servidores = data["mcp"].get("servers", {})
+
+            if not servidores:
+                continue
+
+            config_rel = str(config_path)
+
+            # MCP-VSCODE-006: inventario
+            for nombre, cfg in servidores.items():
+                if not isinstance(cfg, dict):
+                    continue
+
+                transport = cfg.get("type", "stdio").lower()
+                comando   = cfg.get("command", "")
+                args_raw  = cfg.get("args", [])
+                url       = cfg.get("url", "")
+                args_str  = " ".join(str(a) for a in args_raw)
+
+                entrada = {
+                    "nombre": nombre,
+                    "transport": transport,
+                    "comando": comando,
+                    "args": args_raw,
+                    "config_file": config_rel,
+                }
+                servidores_encontrados.append(entrada)
+
+                # MCP-VSCODE-001: servidor STDIO con ruta externa al proyecto
+                if transport == "stdio" and comando:
+                    cmd_path = Path(comando)
+                    es_externo = (
+                        cmd_path.is_absolute() and
+                        not str(cmd_path).startswith(str(base))
+                    ) or comando in ("npx", "uvx", "pipx")
+                    if es_externo:
+                        self._add_finding(Finding(
+                            tool=nombre,
+                            severity="CRITICAL",
+                            type="MCP-VSCODE-001",
+                            title=f"Servidor MCP STDIO externo al proyecto: {nombre}",
+                            description=(
+                                f"El servidor MCP '{nombre}' usa transport STDIO con el comando "
+                                f"'{comando}', que ejecuta código externo al proyecto (ruta absoluta "
+                                "o gestor de paquetes). Cualquier compromiso del paquete externo "
+                                "otorga acceso completo al agente y al entorno del desarrollador. "
+                                f"Configurado en: {config_rel}"
+                            ),
+                            affected=config_rel,
+                            recommendation=(
+                                "Preferir servidores MCP con rutas relativas al proyecto y "
+                                "código auditado. Verificar la integridad del paquete con "
+                                "`npm audit` / `pip-audit`. Revisar los permisos de cada tool."
+                            ),
+                            phase=11,
+                            owasp="MCP-T10",
+                            evidence=f"command: {comando}",
+                        ))
+
+                # MCP-VSCODE-002: servidor HTTP sin autenticación explícita
+                if transport in ("http", "sse") and url:
+                    tiene_auth = bool(
+                        cfg.get("headers", {}) or
+                        cfg.get("auth") or
+                        cfg.get("apiKey") or
+                        cfg.get("authorization")
+                    )
+                    if not tiene_auth:
+                        self._add_finding(Finding(
+                            tool=nombre,
+                            severity="HIGH",
+                            type="MCP-VSCODE-002",
+                            title=f"Servidor MCP HTTP sin autenticación en configuración: {nombre}",
+                            description=(
+                                f"El servidor MCP '{nombre}' usa transport HTTP/SSE ({url}) "
+                                "sin autenticación configurada en el IDE. Cualquier proceso "
+                                "local puede conectarse e invocar sus tools sin credenciales."
+                            ),
+                            affected=config_rel,
+                            recommendation=(
+                                "Añadir cabecera Authorization o apiKey en la configuración "
+                                "del servidor, o restringir el servidor a conexiones autenticadas."
+                            ),
+                            phase=11,
+                            owasp="MCP-T04",
+                            evidence=f"url: {url}, sin auth en config",
+                        ))
+
+                # MCP-VSCODE-003: argumentos de shell peligrosos
+                if transport == "stdio" and _SHELL_DANGER_RE.search(args_str):
+                    self._add_finding(Finding(
+                        tool=nombre,
+                        severity="HIGH",
+                        type="MCP-VSCODE-003",
+                        title=f"Servidor MCP STDIO con argumentos shell peligrosos: {nombre}",
+                        description=(
+                            f"Los argumentos del servidor MCP '{nombre}' contienen metacaracteres "
+                            "de shell o patrones de ejecución peligrosos. Si el servidor es "
+                            "lanzado via shell intermediaria, estos argumentos pueden provocar "
+                            "inyección de comandos."
+                        ),
+                        affected=config_rel,
+                        recommendation=(
+                            "Evitar metacaracteres de shell en argumentos. Usar arrays de "
+                            "argumentos (no strings con shell globbing). Lanzar el proceso "
+                            "directamente sin shell intermediaria."
+                        ),
+                        phase=11,
+                        owasp="MCP-T05",
+                        evidence=f"args: {args_str[:200]}",
+                    ))
+
+                # MCP-VSCODE-005: typosquatting
+                nombre_norm = nombre.lower().replace(" ", "-").replace("_", "-")
+                if nombre_norm in _KNOWN_TYPOSQUATS:
+                    self._add_finding(Finding(
+                        tool=nombre,
+                        severity="MEDIUM",
+                        type="MCP-VSCODE-005",
+                        title=f"Nombre de servidor MCP coincide con typosquat conocido: {nombre}",
+                        description=(
+                            f"El nombre de servidor MCP '{nombre}' coincide con un patrón "
+                            "de typosquatting registrado en la base de datos VSS-MCP. "
+                            "Verificar que el paquete sea el oficial antes de confiar en él."
+                        ),
+                        affected=config_rel,
+                        recommendation=(
+                            "Verificar la URL oficial del repositorio del servidor y comparar "
+                            "el hash del paquete instalado con el publicado en el registro oficial."
+                        ),
+                        phase=11,
+                        owasp="MCP-T10",
+                        evidence=f"nombre: {nombre}",
+                    ))
+
+        # MCP-VSCODE-006: inventario global (INFO)
+        if servidores_encontrados:
+            self._add_finding(Finding(
+                tool="vscode-config",
+                severity="INFO",
+                type="MCP-VSCODE-006",
+                title=f"Inventario VS Code MCP: {len(servidores_encontrados)} servidor(es) configurado(s)",
+                description=(
+                    f"Se encontraron {len(servidores_encontrados)} servidor(es) MCP en configuraciones "
+                    "VS Code / IDE. Revisión de inventario completo recomendada."
+                ),
+                affected=", ".join(set(e["config_file"] for e in servidores_encontrados)),
+                recommendation="Auditar permisos y origen de cada servidor MCP configurado.",
+                phase=11,
+                owasp="MCP-T10",
+                evidence=json.dumps(
+                    [{"nombre": e["nombre"], "transport": e["transport"], "comando": e.get("comando", "")}
+                     for e in servidores_encontrados],
+                    ensure_ascii=False,
+                ),
+            ))
+
+    # -----------------------------------------------------------------------
     # Orquestador principal
     # -----------------------------------------------------------------------
 
@@ -2629,6 +3067,11 @@ class MCPAuditor:
             # FASE 10: Análisis de servidor en producción (endpoints públicos sin auth)
             self._phase_header(10, "Servidor de Producción — Endpoints sin Autenticación")
             await self._analyze_production_server(session)
+
+        # FASE 11: Auditoría de configuraciones VS Code MCP (no requiere sesión HTTP)
+        if getattr(self, "vscode_dir", None) is not None:
+            self._phase_header(11, "Configuraciones VS Code / IDE — Servidores MCP Locales")
+            self.audit_vscode_config(self.vscode_dir)
 
         # Ordenar hallazgos por severidad descendente
         sorted_findings = sorted(self.findings, key=lambda f: f.order)
@@ -3380,6 +3823,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=0,
         help="Polling continuo: re-auditar el servidor cada N segundos y alertar de cambios",
     )
+    parser.add_argument(
+        "--vscode-config",
+        metavar="DIRECTORIO",
+        dest="vscode_config",
+        default=None,
+        help=(
+            "Auditar configuraciones VS Code MCP (Fase 11). Proporcionar el directorio raíz "
+            "del proyecto donde buscar .vscode/mcp.json y .vscode/settings.json. "
+            "Usa '.' para el directorio actual."
+        ),
+    )
 
     return parser
 
@@ -3404,6 +3858,15 @@ def main() -> None:
         return
 
     # Ejecutar auditoría
+    vscode_dir: Optional[Path] = None
+    if getattr(args, "vscode_config", None):
+        vscode_dir = Path(args.vscode_config).resolve()
+        if not vscode_dir.is_dir():
+            Console().print(
+                f"[bold red]Error:[/bold red] --vscode-config '{vscode_dir}' no es un directorio."
+            )
+            sys.exit(2)
+
     auditor = MCPAuditor(
         target=args.target,
         scope_file=args.scope,
@@ -3411,6 +3874,7 @@ def main() -> None:
         verbose=args.verbose,
         ctx_limit=args.ctx_limit,
         test_ssrf=args.test_ssrf,
+        vscode_dir=vscode_dir,
     )
 
     try:
