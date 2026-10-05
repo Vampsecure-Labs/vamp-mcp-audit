@@ -1,4 +1,6 @@
 <!-- © VampSecure Studios — VampSecure Labs Security Research Division -->
+
+  <img src="https://github.com/Vampsecure-Labs/vamp-mcp-audit/actions/workflows/ci.yml/badge.svg" alt="CI"/>
 # vamp-mcp-audit
 
 **VampSecure Labs · Security Research Division**
@@ -47,6 +49,33 @@ python vamp_mcp_audit.py --target http://127.0.0.1:8080 --timeout 15 --verbose
 | `--scope FILE`  | Fichero JSON de restricciones de scope (opcional)        |
 | `--timeout N`   | Timeout HTTP en segundos (por defecto: 10)               |
 | `--verbose`     | Output de depuración detallado                           |
+
+---
+
+## Sample Output
+
+```
+  vamp-mcp-audit v1.3 · auditing http://localhost:3000
+  ──────────────────────────────────────────────────────────────────
+  ████████████████████  5/5 phases complete
+
+  ┌─ CRITICAL ─────────────────────────────────────────────────────┐
+  │  MCP-INJ-001  Tool description contains prompt injection        │
+  │  Resource: calculator/add                                        │
+  │  Payload matched: "ignore previous instructions"                │
+  │  Remediation: sanitize all tool description fields              │
+  └────────────────────────────────────────────────────────────────┘
+
+  [HIGH]   MCP-VER-003  MCP version 0.1 below minimum 1.0
+  [HIGH]   MCP-RISK-002 Agentic risk score: 87/100 (critical threshold)
+  [MEDIUM] MCP-AUTH-001 No authentication on tool endpoints
+  [MEDIUM] MCP-EXP-001  Stack trace exposed in error response
+  [INFO]   MCP-INF-001  Server: FastMCP/0.9.1 Python/3.11
+
+  ────────────────────────────────────────────────────────────────
+  Total: 6 findings (1 CRITICAL, 2 HIGH, 2 MEDIUM, 1 INFO)
+  Agentic risk: CRITICAL · ASCII smuggling: not detected
+```
 
 ---
 
