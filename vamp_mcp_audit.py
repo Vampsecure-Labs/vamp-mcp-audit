@@ -100,7 +100,7 @@ import ssl
 import sys
 import time
 import urllib.parse
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -110,10 +110,6 @@ import aiohttp
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
-from rich.live import Live
-from rich.spinner import Spinner
-from rich.columns import Columns
 from rich import box
 
 # ---------------------------------------------------------------------------
@@ -1579,7 +1575,6 @@ class MCPAuditor:
         """
         scheme = self.parsed_url.scheme
         host   = self.parsed_url.netloc
-        path   = self.parsed_url.path or "/"
 
         # --- Comprobación 1: Uso de HTTP en lugar de HTTPS ---
         if scheme == "http":
@@ -1633,7 +1628,7 @@ class MCPAuditor:
         port     = int(host.split(":")[1]) if ":" in host else 443
 
         try:
-            ctx = ssl.create_default_context()
+            ssl.create_default_context()
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
@@ -3571,15 +3566,15 @@ class VampSecReport:
 <!-- Tools inventariadas -->
 <div class="section">
   <div class="section-title">Tools MCP Inventariadas ({len(self.tools)})</div>
-  {"<p style='color:#64748b;font-size:12px'>Sin tools disponibles o no enumeradas.</p>" if not self.tools else f"""
+  {"<p style='color:#64748b;font-size:12px'>Sin tools disponibles o no enumeradas.</p>" if not self.tools else f'''
   <table>
     <thead>
-      <tr><th style='width:220px'>Nombre</th><th>Descripción</th></tr>
+      <tr><th style="width:220px">Nombre</th><th>Descripción</th></tr>
     </thead>
     <tbody>
       {tool_rows}
     </tbody>
-  </table>"""}
+  </table>'''}
 </div>
 
 <!-- Hallazgos de seguridad -->
@@ -3595,7 +3590,7 @@ class VampSecReport:
     <button class="filter-btn" onclick="filterFindings('INFO', this)">INFO</button>
   </div>
 
-  {"<p style='color:#64748b;font-size:12px'>Sin hallazgos de seguridad detectados.</p>" if not self.findings else f"""
+  {"<p style='color:#64748b;font-size:12px'>Sin hallazgos de seguridad detectados.</p>" if not self.findings else f'''
   <table>
     <thead>
       <tr>
@@ -3610,7 +3605,7 @@ class VampSecReport:
     <tbody>
       {finding_rows}
     </tbody>
-  </table>"""}
+  </table>'''}
 </div>
 
 <div class="footer">

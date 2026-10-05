@@ -6,9 +6,6 @@ Cubre la detección de ASCII smuggling, patrones de inyección,
 la clase Finding, la lógica de riesgo agéntico y las constantes.
 """
 
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
