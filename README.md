@@ -244,6 +244,44 @@ Ficheros inspeccionados: `.vscode/mcp.json`, `.vscode/settings.json`, y configur
 
 ---
 
+## Why vamp-mcp-audit — Primera herramienta OSS de auditoría MCP
+
+No existe todavía ninguna herramienta OSS equivalente. La siguiente tabla compara
+vamp-mcp-audit con las alternativas que los equipos de seguridad usan hoy:
+revisión manual, Burp Suite y análisis estático genérico (SAST).
+
+| Feature | vamp-mcp-audit | Revisión manual | Burp Suite | SAST genérico |
+|---------|:--------------:|:---------------:|:----------:|:-------------:|
+| Detección de ASCII smuggling (Unicode Tags) | ✅ | ❌ | ❌ | ❌ |
+| Dataset de 50 payloads de tool poisoning reales | ✅ | ❌ | ❌ | ❌ |
+| Evaluación OWASP Agentic AI Top 10 2026 | ✅ | ❌ | ❌ | ❌ |
+| Auditoría de configuración VS Code MCP (.vscode/mcp.json) | ✅ | Parcial | ❌ | ❌ |
+| Risk score global automatizado (0–100) | ✅ | ❌ | ❌ | ❌ |
+| SSRF activo en parámetros de tools MCP | ✅ | Parcial | ✅ | ❌ |
+| Detección de secretos en env vars de configuración MCP | ✅ | ❌ | ❌ | ✅ |
+| Informe HTML dark-theme + JSON exportable | ✅ | ❌ | ✅ | ✅ |
+
+- **Único auditor especializado en el protocolo MCP.** Ninguna herramienta existente entiende la semántica de tools, resources y sampling de MCP. Burp Suite trata los endpoints como HTTP genérico y no puede detectar tool poisoning ni ASCII smuggling en descriptions de tools.
+- **ASCII smuggling: el vector invisible.** Los caracteres Unicode Tags (U+E0000–U+E007F) no son visibles en ningún editor ni inspector JSON. vamp-mcp-audit es la primera herramienta OSS que decodifica e informa sobre este vector documentado por Microsoft Security Research (sep 2026).
+- **OWASP Agentic AI Top 10 2026 nativo.** Cada hallazgo se etiqueta con el riesgo OWASP Agentic AI correspondiente — ideal para auditorías formales que requieren mapeo a un estándar reconocido.
+- **Sin agente, sin suscripción, sin dependencia de nube.** Un fichero Python, sin datos que salen de la máquina del auditor, sin API key de terceros requerida.
+
+## Check Coverage
+
+| Check ID | Description | Standard | Severity |
+|----------|-------------|----------|----------|
+| MCP-INJ-001 | Tool description contains prompt injection payload (17 regex + 50 curated payloads) | OWASP LLM01 · Agentic AI A01 | CRITICAL |
+| MCP-INJ-002 | ASCII smuggling: Unicode Tags (U+E0000–U+E007F) in tool fields | OWASP LLM01 · VSS-MCP-2025-002 | CRITICAL |
+| MCP-AUTH-001 | No authentication on tool endpoints (unauthenticated tools/list) | OWASP Agentic AI A04 · VSS-MCP-2025-003 | HIGH |
+| MCP-PERM-001 | Excessive permission scope: filesystem, shell, or network access granted | OWASP Agentic AI A03 · MITRE T1059 | HIGH |
+| MCP-TRANS-001 | Missing TLS on remote MCP server transport | OWASP Agentic AI A05 | HIGH |
+| MCP-TRANS-002 | STDIO argument injection vector exposed (CVSS 9.8) | VSS-MCP-2025-001 · CWE-78 | CRITICAL |
+| MCP-SSRF-001 | SSRF: URL parameter in tool input schema accepts arbitrary hosts | OWASP Agentic AI A07 · VSS-MCP-2025-005 | CRITICAL |
+| MCP-VER-001 | MCP protocol version below minimum supported (< 1.0) | MCP Spec 2024-11-05 | HIGH |
+| MCP-VSCODE-001 | MCP server configured without authentication in .vscode/mcp.json | OWASP Agentic AI A04 | HIGH |
+| MCP-VSCODE-002 | API key or secret exposed in plain text in VS Code MCP env config | OWASP LLM02 · CWE-312 | CRITICAL |
+| MCP-RISK-001 | Global agentic risk score exceeds critical threshold (>= 80/100) | OWASP Agentic AI Top 10 2026 | CRITICAL |
+
 ## Historial de versiones
 
 | Versión | Cambios principales |
