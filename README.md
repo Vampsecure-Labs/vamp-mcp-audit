@@ -254,27 +254,31 @@ Ficheros inspeccionados: `.vscode/mcp.json`, `.vscode/settings.json`, y configur
 
 ---
 
-## Why vamp-mcp-audit — Primera herramienta OSS especializada en protocolo MCP
+## Why vamp-mcp-audit vs. mcpscan-cli · Snyk Agent Scan · Burp Suite
 
-La siguiente tabla compara vamp-mcp-audit con las alternativas que los equipos
-de seguridad usan hoy: revisión manual, Burp Suite y análisis estático genérico (SAST).
+El ecosistema de herramientas MCP se divide en dos categorías: **gates estáticos pre-instalación** y **auditores live post-deploy**. vamp-mcp-audit es el único auditor live especializado en el protocolo MCP disponible como software libre.
 
-| Feature | vamp-mcp-audit | Revisión manual | Burp Suite | SAST genérico |
-|---------|:--------------:|:---------------:|:----------:|:-------------:|
-| Detección de ASCII smuggling (Unicode Tags) | ✅ | ❌ | ❌ | ❌ |
-| Dataset de 50 payloads de tool poisoning reales | ✅ | ❌ | ❌ | ❌ |
-| Cobertura OWASP MCP Top 10 oficial (10/10) | ✅ | ❌ | ❌ | ❌ |
-| Evaluación OWASP Agentic AI Top 10 2026 | ✅ | ❌ | ❌ | ❌ |
-| Auditoría de configuración VS Code MCP (.vscode/mcp.json) | ✅ | Parcial | ❌ | ❌ |
-| Risk score global automatizado (0–100) | ✅ | ❌ | ❌ | ❌ |
-| SSRF activo en parámetros de tools MCP | ✅ | Parcial | ✅ | ❌ |
-| Detección de secretos en env vars de configuración MCP | ✅ | ❌ | ❌ | ✅ |
-| Informe HTML dark-theme + JSON exportable | ✅ | ❌ | ✅ | ✅ |
+| Feature | vamp-mcp-audit | mcpscan-cli | Snyk Agent Scan | Burp Suite |
+|---|:---:|:---:|:---:|:---:|
+| **Live DAST** (conecta al servidor real) | ✅ | ❌ estático | ✅ cloud | ✅ |
+| ASCII smuggling **decodificado** con evidencia | ✅ | ⚠️ detecta | ❌ | ❌ |
+| SSRF activo en parámetros de tool | ✅ | ❌ | ❌ | ✅ |
+| STDIO injection test activo (CVSS 9.8) | ✅ | ❌ | ❌ | ❌ |
+| OWASP MCP Top 10 oficial — cobertura 10/10 | ✅ | ⚠️ 7/10 | ❌ | ❌ |
+| OWASP Agentic AI Top 10 2026 por hallazgo | ✅ | ❌ | ❌ | ❌ |
+| Tool rug-pull / schema drift detection | ✅ | ❌ | ❌ | ❌ |
+| VSCode config audit (`.vscode/mcp.json`) | ✅ | ✅ (7 editores) | ❌ | ❌ |
+| Risk score agentic global 0–100 | ✅ | ❌ | ❌ | ❌ |
+| Sin API key — sin datos en nube | ✅ | ✅ | ❌ requiere token | ❌ |
+| Informe HTML dark-theme + JSON | ✅ | ❌ JSON/SARIF | ❌ | ✅ |
+| pip + Homebrew | ✅ | ❌ pip only | ❌ | ❌ |
 
-- **Único auditor especializado en el protocolo MCP.** Ninguna herramienta existente entiende la semántica de tools, resources y sampling de MCP. Burp Suite trata los endpoints como HTTP genérico y no puede detectar tool poisoning ni ASCII smuggling en descriptions de tools.
-- **ASCII smuggling: el vector invisible.** Los caracteres Unicode Tags (U+E0000–U+E007F) no son visibles en ningún editor ni inspector JSON. vamp-mcp-audit es la primera herramienta OSS que decodifica e informa sobre este vector documentado por Microsoft Security Research (sep 2026).
-- **OWASP MCP Top 10 oficial + Agentic AI Top 10 2026.** Cada hallazgo se etiqueta con el riesgo OWASP MCP Top 10 (proyecto oficial, Phase 3 Beta) y el riesgo Agentic AI correspondiente — ideal para auditorías formales que requieren mapeo a estándares reconocidos.
-- **Sin agente, sin suscripción, sin dependencia de nube.** Un fichero Python, sin datos que salen de la máquina del auditor, sin API key de terceros requerida.
+> **Nota:** mcpscan-cli es un excelente gate estático pre-instalación (supply chain, SDK vulnerable, hook audit) — complementario, no sustituto. Snyk Agent Scan envía datos a la nube y requiere suscripción.
+
+- **El único auditor live sin dependencia de nube.** mcpscan-cli nunca conecta al servidor; Snyk Agent Scan requiere `SNYK_TOKEN` y envía datos a la API de Snyk. vamp-mcp-audit audita en local, sin que ningún dato salga de la máquina del auditor.
+- **ASCII smuggling decodificado.** mcpscan-cli detecta la presencia de Unicode Tags pero no decodifica el mensaje oculto. vamp-mcp-audit devuelve el texto invisible extraído como evidencia adjunta al hallazgo.
+- **OWASP MCP Top 10 completo.** mcpscan-cli salta explícitamente MCP06 (Prompt Injection), MCP08 (Audit/Telemetry) y MCP10 (Context Injection) por requerir análisis runtime. vamp-mcp-audit cubre los 10 al ejecutar contra el servidor vivo.
+- **Sin agente, sin suscripción, auto-contenido.** Un fichero Python, exit codes para CI/CD, sin API key de terceros, sin telemetría.
 
 ## Check Coverage
 
