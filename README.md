@@ -181,7 +181,7 @@ Se cargan al iniciar el módulo — sin peticiones de red en runtime.
 - [OWASP MCP Top 10 — Proyecto oficial (Phase 3 Beta)](https://owasp.org/www-project-mcp-top-10/)
 - [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
 - [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/initiatives/agentic-security-initiative/)
-- OX Security — MCP STDIO Injection, abril 2026 (CVSS 9.8)
+- [OX Security — MCP STDIO Supply Chain RCE, abril 2026 (CVSS 9.8)](https://www.ox.security/blog/mcp-supply-chain-advisory-rce-vulnerabilities-across-the-ai-ecosystem/)
 - TrustAI-laboratory — Learn-Prompt-Hacking dataset (payloads curados)
 - [Microsoft Security Research — ASCII Smuggling, sep 2026](https://www.microsoft.com/en-us/security/blog/2026/09/03/ascii-smuggling-crosses-over-from-ai-prompt-injection-to-phishing-evasion/)
 - [Johann Rehberger — ASCII Smuggler (embracethered.com)](https://embracethered.com/blog/posts/2024/ascii-smuggler/)
@@ -212,25 +212,25 @@ Uso exclusivo en auditorías autorizadas. El uso no autorizado es ilegal.
 | MCP09:2025 | Shadow MCP Servers | MCP-VSCODE-001, MCP-VER-001 |
 | MCP10:2025 | Context Injection & Over-Sharing | MCP-PERM-001, MCP-SSRF-001 |
 
-Además, vamp-mcp-audit cubre tres vectores no recogidos en el Top 10 oficial, documentados en el namespace VSS-MCP:
+Además, vamp-mcp-audit cubre tres vectores no recogidos en el Top 10 oficial, documentados en nuestra investigación interna:
 
-| VSS-ID | Vector adicional | CVSS |
+| ID interno | Vector adicional | CVSS |
 |---|---|---|
-| VSS-MCP-2025-001 | Insecure Transport / STDIO argument injection | 9.8 |
-| VSS-MCP-2025-004 | Tool Rug Pull / Schema Drift | 7.2 |
-| VSS-MCP-2025-005 | SSRF via Tool URL Parameters | 9.0 |
+| VL-MCP-001 | Insecure Transport / STDIO argument injection | 9.8 |
+| VL-MCP-004 | Tool Rug Pull / Schema Drift | 7.2 |
+| VL-MCP-005 | SSRF via Tool URL Parameters | 9.0 |
 
-## VSS-MCP CVE Namespace
+## IDs de investigación interna (VampSecure Labs)
 
-VampSecure Labs mantiene un namespace CVE propio para vulnerabilidades documentadas en el ecosistema MCP:
+> ⚠️ **Nota:** Los identificadores `VL-MCP-*` son **IDs de seguimiento interno** de VampSecure Labs para organizar nuestra investigación. **No son CVEs registrados en MITRE/NVD** — no se pueden buscar en bases de datos públicas de vulnerabilidades. Para CVEs públicos relacionados con el vector STDIO injection, ver: `CVE-2025-54136` (Cursor IDE), `CVE-2026-30623` (LiteLLM), `CVE-2026-33224` (Bisheng) — documentados por OX Security (abril 2026).
 
-| CVE-ID | Título | CVSS | CWE |
+| ID interno | Título | CVSS | CWE |
 |---|---|---|---|
-| VSS-MCP-2025-001 | STDIO Argument Injection | 9.8 | CWE-78 |
-| VSS-MCP-2025-002 | Unicode Tags Invisible Injection | 9.3 | CWE-116 |
-| VSS-MCP-2025-003 | Unauthenticated tools/list | 7.5 | CWE-306 |
-| VSS-MCP-2025-004 | Tool Rug-Pull via Schema Drift | 7.2 | CWE-362 |
-| VSS-MCP-2025-005 | SSRF via URL Parameters | 9.0 | CWE-918 |
+| VL-MCP-001 | STDIO Argument Injection | 9.8 | CWE-78 |
+| VL-MCP-002 | Unicode Tags Invisible Injection | 9.3 | CWE-116 |
+| VL-MCP-003 | Unauthenticated tools/list | 7.5 | CWE-306 |
+| VL-MCP-004 | Tool Rug-Pull via Schema Drift | 7.2 | CWE-362 |
+| VL-MCP-005 | SSRF via URL Parameters | 9.0 | CWE-918 |
 
 ## Fase 11 — VS Code Config Audit (`--vscode-config`)
 
@@ -285,12 +285,12 @@ El ecosistema de herramientas MCP se divide en dos categorías: **gates estátic
 | Check ID | Description | Standard | Severity |
 |----------|-------------|----------|----------|
 | MCP-INJ-001 | Tool description contains prompt injection payload (17 regex + 50 curated payloads) | OWASP LLM01 · Agentic AI A01 | CRITICAL |
-| MCP-INJ-002 | ASCII smuggling: Unicode Tags (U+E0000–U+E007F) in tool fields | OWASP LLM01 · VSS-MCP-2025-002 | CRITICAL |
-| MCP-AUTH-001 | No authentication on tool endpoints (unauthenticated tools/list) | OWASP Agentic AI A04 · VSS-MCP-2025-003 | HIGH |
+| MCP-INJ-002 | ASCII smuggling: Unicode Tags (U+E0000–U+E007F) in tool fields | OWASP LLM01 · VL-MCP-002 | CRITICAL |
+| MCP-AUTH-001 | No authentication on tool endpoints (unauthenticated tools/list) | OWASP Agentic AI A04 · VL-MCP-003 | HIGH |
 | MCP-PERM-001 | Excessive permission scope: filesystem, shell, or network access granted | OWASP Agentic AI A03 · MITRE T1059 | HIGH |
 | MCP-TRANS-001 | Missing TLS on remote MCP server transport | OWASP Agentic AI A05 | HIGH |
-| MCP-TRANS-002 | STDIO argument injection vector exposed (CVSS 9.8) | VSS-MCP-2025-001 · CWE-78 | CRITICAL |
-| MCP-SSRF-001 | SSRF: URL parameter in tool input schema accepts arbitrary hosts | OWASP Agentic AI A07 · VSS-MCP-2025-005 | CRITICAL |
+| MCP-TRANS-002 | STDIO argument injection vector exposed (CVSS 9.8) | VL-MCP-001 · CWE-78 · CVE-2025-54136 | CRITICAL |
+| MCP-SSRF-001 | SSRF: URL parameter in tool input schema accepts arbitrary hosts | OWASP Agentic AI A07 · VL-MCP-005 | CRITICAL |
 | MCP-VER-001 | MCP protocol version below minimum supported (< 1.0) | MCP Spec 2024-11-05 | HIGH |
 | MCP-VSCODE-001 | MCP server configured without authentication in .vscode/mcp.json | OWASP Agentic AI A04 | HIGH |
 | MCP-VSCODE-002 | API key or secret exposed in plain text in VS Code MCP env config | OWASP LLM02 · CWE-312 | CRITICAL |
@@ -301,7 +301,7 @@ El ecosistema de herramientas MCP se divide en dos categorías: **gates estátic
 | Versión | Cambios principales |
 |---------|---------------------|
 | v2.4 | Cobertura completa OWASP MCP Top 10 oficial (Phase 3 Beta, mapping 10/10), referencias actualizadas |
-| v2.3 | VSS-MCP CVE namespace (5 CVEs), Fase 11 VS Code config audit (`--vscode-config`) |
+| v2.3 | IDs de investigación interna VL-MCP (5 vectores), Fase 11 VS Code config audit (`--vscode-config`) |
 | v2.2 | OWASP Agentic AI mapping mejorado, Phase 5 risk score |
 | v2.1 | ASCII smuggling detection, dataset 50 payloads curados |
 | v2.0 | 5 fases completas, HTML report, exit codes CI/CD |
