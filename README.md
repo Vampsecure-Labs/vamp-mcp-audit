@@ -178,7 +178,9 @@ Se cargan al iniciar el módulo — sin peticiones de red en runtime.
 ## Referencias
 
 - [MCP Specification 2024-11-05](https://modelcontextprotocol.io)
-- [OWASP Agentic AI Top 10 2026](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
+- [OWASP MCP Top 10 — Proyecto oficial (Phase 3 Beta)](https://owasp.org/www-project-mcp-top-10/)
+- [OWASP MCP Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/MCP_Security_Cheat_Sheet.html)
+- [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/initiatives/agentic-security-initiative/)
 - OX Security — MCP STDIO Injection, abril 2026 (CVSS 9.8)
 - TrustAI-laboratory — Learn-Prompt-Hacking dataset (payloads curados)
 - [Microsoft Security Research — ASCII Smuggling, sep 2026](https://www.microsoft.com/en-us/security/blog/2026/09/03/ascii-smuggling-crosses-over-from-ai-prompt-injection-to-phishing-evasion/)
@@ -193,22 +195,30 @@ Uso exclusivo en auditorías autorizadas. El uso no autorizado es ilegal.
 
 ---
 
-## OWASP MCP Top 10 (Propuesta VampSecure Labs 2025)
+## OWASP MCP Top 10 Coverage
 
-`vamp-mcp-audit` implementa el primer borrador público del **OWASP MCP Top 10** — un estándar formal propuesto para clasificar vulnerabilidades en servidores MCP:
+`vamp-mcp-audit` audita contra el **[OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/)** (proyecto oficial OWASP, Phase 3 Beta 2025), el estándar de referencia para clasificar vulnerabilidades en servidores MCP. Mapeado check a check:
 
-| ID | Nombre | CVSS Base |
+| OWASP ID | Nombre oficial | vamp-mcp-audit checks |
 |---|---|---|
-| MCP-T01 | Tool Poisoning | 9.3 |
-| MCP-T02 | Prompt Injection via Tool Results | 8.8 |
-| MCP-T03 | Excessive Permission Scope | 7.5 |
-| MCP-T04 | Missing Authentication | 7.5 |
-| MCP-T05 | Insecure Transport | 7.4 |
-| MCP-T06 | Tool Rug Pull / Schema Drift | 7.2 |
-| MCP-T07 | SSRF via Tool Parameters | 9.0 |
-| MCP-T08 | Sensitive Data Exfiltration | 8.5 |
-| MCP-T09 | Malicious Sampling Requests | 7.8 |
-| MCP-T10 | Supply Chain Compromise | 8.9 |
+| MCP01:2025 | Token Mismanagement & Secret Exposure | MCP-VSCODE-002 |
+| MCP02:2025 | Privilege Escalation via Scope Creep | MCP-PERM-001 |
+| MCP03:2025 | Tool Poisoning | MCP-INJ-001, MCP-INJ-002 |
+| MCP04:2025 | Software Supply Chain Attacks | MCP-VER-001 |
+| MCP05:2025 | Command Injection & Execution | MCP-TRANS-002 (STDIO injection CVSS 9.8) |
+| MCP06:2025 | Prompt Injection via Contextual Payloads | MCP-INJ-001, MCP-INJ-002 |
+| MCP07:2025 | Insufficient Authentication & Authorization | MCP-AUTH-001, MCP-VSCODE-001 |
+| MCP08:2025 | Lack of Audit and Telemetry | MCP-RISK-001 |
+| MCP09:2025 | Shadow MCP Servers | MCP-VSCODE-001, MCP-VER-001 |
+| MCP10:2025 | Context Injection & Over-Sharing | MCP-PERM-001, MCP-SSRF-001 |
+
+Además, vamp-mcp-audit cubre tres vectores no recogidos en el Top 10 oficial, documentados en el namespace VSS-MCP:
+
+| VSS-ID | Vector adicional | CVSS |
+|---|---|---|
+| VSS-MCP-2025-001 | Insecure Transport / STDIO argument injection | 9.8 |
+| VSS-MCP-2025-004 | Tool Rug Pull / Schema Drift | 7.2 |
+| VSS-MCP-2025-005 | SSRF via Tool URL Parameters | 9.0 |
 
 ## VSS-MCP CVE Namespace
 
@@ -244,16 +254,16 @@ Ficheros inspeccionados: `.vscode/mcp.json`, `.vscode/settings.json`, y configur
 
 ---
 
-## Why vamp-mcp-audit — Primera herramienta OSS de auditoría MCP
+## Why vamp-mcp-audit — Primera herramienta OSS especializada en protocolo MCP
 
-No existe todavía ninguna herramienta OSS equivalente. La siguiente tabla compara
-vamp-mcp-audit con las alternativas que los equipos de seguridad usan hoy:
-revisión manual, Burp Suite y análisis estático genérico (SAST).
+La siguiente tabla compara vamp-mcp-audit con las alternativas que los equipos
+de seguridad usan hoy: revisión manual, Burp Suite y análisis estático genérico (SAST).
 
 | Feature | vamp-mcp-audit | Revisión manual | Burp Suite | SAST genérico |
 |---------|:--------------:|:---------------:|:----------:|:-------------:|
 | Detección de ASCII smuggling (Unicode Tags) | ✅ | ❌ | ❌ | ❌ |
 | Dataset de 50 payloads de tool poisoning reales | ✅ | ❌ | ❌ | ❌ |
+| Cobertura OWASP MCP Top 10 oficial (10/10) | ✅ | ❌ | ❌ | ❌ |
 | Evaluación OWASP Agentic AI Top 10 2026 | ✅ | ❌ | ❌ | ❌ |
 | Auditoría de configuración VS Code MCP (.vscode/mcp.json) | ✅ | Parcial | ❌ | ❌ |
 | Risk score global automatizado (0–100) | ✅ | ❌ | ❌ | ❌ |
@@ -263,7 +273,7 @@ revisión manual, Burp Suite y análisis estático genérico (SAST).
 
 - **Único auditor especializado en el protocolo MCP.** Ninguna herramienta existente entiende la semántica de tools, resources y sampling de MCP. Burp Suite trata los endpoints como HTTP genérico y no puede detectar tool poisoning ni ASCII smuggling en descriptions de tools.
 - **ASCII smuggling: el vector invisible.** Los caracteres Unicode Tags (U+E0000–U+E007F) no son visibles en ningún editor ni inspector JSON. vamp-mcp-audit es la primera herramienta OSS que decodifica e informa sobre este vector documentado por Microsoft Security Research (sep 2026).
-- **OWASP Agentic AI Top 10 2026 nativo.** Cada hallazgo se etiqueta con el riesgo OWASP Agentic AI correspondiente — ideal para auditorías formales que requieren mapeo a un estándar reconocido.
+- **OWASP MCP Top 10 oficial + Agentic AI Top 10 2026.** Cada hallazgo se etiqueta con el riesgo OWASP MCP Top 10 (proyecto oficial, Phase 3 Beta) y el riesgo Agentic AI correspondiente — ideal para auditorías formales que requieren mapeo a estándares reconocidos.
 - **Sin agente, sin suscripción, sin dependencia de nube.** Un fichero Python, sin datos que salen de la máquina del auditor, sin API key de terceros requerida.
 
 ## Check Coverage
@@ -286,7 +296,8 @@ revisión manual, Burp Suite y análisis estático genérico (SAST).
 
 | Versión | Cambios principales |
 |---------|---------------------|
-| v2.3 | OWASP MCP Top 10 (propuesta formal), VSS-MCP CVE namespace (5 CVEs), Fase 11 VS Code config audit (`--vscode-config`) |
+| v2.4 | Cobertura completa OWASP MCP Top 10 oficial (Phase 3 Beta, mapping 10/10), referencias actualizadas |
+| v2.3 | VSS-MCP CVE namespace (5 CVEs), Fase 11 VS Code config audit (`--vscode-config`) |
 | v2.2 | OWASP Agentic AI mapping mejorado, Phase 5 risk score |
 | v2.1 | ASCII smuggling detection, dataset 50 payloads curados |
 | v2.0 | 5 fases completas, HTML report, exit codes CI/CD |
