@@ -62,7 +62,7 @@ python vamp_mcp_audit.py --target http://127.0.0.1:8080 --timeout 15 --verbose
 ### Sample Output
 
 ```
-  vamp-mcp-audit v1.3 · auditing http://localhost:3000
+  vamp-mcp-audit v2.3 · auditing http://localhost:3000
   ──────────────────────────────────────────────────────────────────
   ████████████████████  5/5 phases complete
 
